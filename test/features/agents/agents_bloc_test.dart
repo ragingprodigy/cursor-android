@@ -37,7 +37,7 @@ void main() {
 
   setUp(() {
     repository = _MockAgentsRepository();
-    cacheController = StreamController<AgentsSnapshot>();
+    cacheController = StreamController<AgentsSnapshot>.broadcast();
     when(() => repository.watchCached()).thenAnswer((_) {
       return cacheController.stream;
     });
@@ -66,6 +66,7 @@ void main() {
     },
     wait: const Duration(milliseconds: 10),
     expect: () => [
+      const AgentsState.loading(),
       AgentsState.cached([cachedAgent]),
       AgentsState.ready([remoteAgent]),
     ],
