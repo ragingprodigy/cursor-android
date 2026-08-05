@@ -11,10 +11,14 @@ class AuthSessionRepository {
     required AuthRemoteSource remoteSource,
     required SecureCredentialsStore credentials,
     required AppConfig config,
-  }) : _apiClient = apiClient,
-       _remoteSource = remoteSource,
-       _credentials = credentials,
-       _config = config;
+  }) : this._(apiClient, remoteSource, credentials, config);
+
+  AuthSessionRepository._(
+    this._apiClient,
+    this._remoteSource,
+    this._credentials,
+    this._config,
+  );
 
   final CursorApiClient _apiClient;
   final AuthRemoteSource _remoteSource;
