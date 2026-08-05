@@ -1,3 +1,6 @@
+# SDD / agent scratch (local only)
+.superpowers/
+
 # Miscellaneous
 *.class
 *.log
