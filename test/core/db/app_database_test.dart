@@ -88,7 +88,7 @@ void main() {
 
     expect(row, isNotNull);
     expect(row!.json, '{"messages":[{"text":"hello"}]}');
-    expect(row.cachedAt, DateTime.utc(2026, 2, 2));
+    expect(row.cachedAt.toUtc(), DateTime.utc(2026, 2, 2));
   });
 
   test('saves, reads, and deletes drafts', () async {
