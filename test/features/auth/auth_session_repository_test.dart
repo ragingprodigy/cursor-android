@@ -62,7 +62,13 @@ void main() {
       final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
       dio.httpClientAdapter = _Adapter((options) async {
         authorization = options.headers['Authorization'] as String?;
-        return ResponseBody.fromString('{}', 200);
+        return ResponseBody.fromString(
+          '{}',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
       });
       final credentials = _FakeCredentialsStore('stored-key');
       final apiClient = CursorApiClient(dio);
@@ -91,7 +97,13 @@ void main() {
     final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
     dio.httpClientAdapter = _Adapter((options) async {
       authorization = options.headers['Authorization'] as String?;
-      return ResponseBody.fromString('{}', 200);
+      return ResponseBody.fromString(
+        '{}',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
     });
     final credentials = _FakeCredentialsStore('bad-key');
     final apiClient = CursorApiClient(dio);
