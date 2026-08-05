@@ -7,6 +7,10 @@ import 'package:cursor/features/agents/presentation/agents_bloc.dart';
 import 'package:cursor/features/auth/data/auth_remote_source.dart';
 import 'package:cursor/features/auth/data/auth_session_repository.dart';
 import 'package:cursor/features/auth/presentation/connect_bloc.dart';
+import 'package:cursor/features/launch/data/catalog_remote_source.dart';
+import 'package:cursor/features/launch/data/launch_draft_store.dart';
+import 'package:cursor/features/launch/data/launch_repository.dart';
+import 'package:cursor/features/launch/presentation/launch_bloc.dart';
 import 'package:dio/dio.dart';
 
 class AppDependencies {
@@ -46,6 +50,15 @@ class AppDependencies {
     apiClient: cursorApiClient,
     database: database,
   );
+  late final CatalogRemoteSource catalogRemoteSource = CatalogRemoteSource(
+    cursorApiClient,
+  );
+  late final LaunchDraftStore launchDraftStore = LaunchDraftStore(
+    database.draftsDao,
+  );
+  late final LaunchRepository launchRepository = LaunchRepository(
+    catalogRemoteSource: catalogRemoteSource,
+  );
   late final AuthSessionRepository authSession =
       _authSessionOverride ??
       AuthSessionRepository(
@@ -63,6 +76,13 @@ class AppDependencies {
 
   AgentsBloc createAgentsBloc() {
     return AgentsBloc(agentsRepository);
+  }
+
+  LaunchBloc createLaunchBloc() {
+    return LaunchBloc(
+      repository: launchRepository,
+      draftStore: launchDraftStore,
+    );
   }
 }
 

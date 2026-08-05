@@ -1,0 +1,151 @@
+import 'dart:convert';
+
+import 'package:cursor/core/network/cursor_api_client.dart';
+import 'package:cursor/features/launch/data/catalog_remote_source.dart';
+import 'package:cursor/features/launch/data/launch_repository.dart';
+import 'package:dio/dio.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+class _Adapter implements HttpClientAdapter {
+  _Adapter(this.handler);
+
+  final Future<ResponseBody> Function(RequestOptions) handler;
+
+  @override
+  void close({bool force = false}) {}
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<List<int>>? requestStream,
+    Future? cancelFuture,
+  ) {
+    return handler(options);
+  }
+}
+
+void main() {
+  test('createAgent omits model when Default is selected', () async {
+    late RequestOptions seenRequest;
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      seenRequest = options;
+      return ResponseBody.fromString(
+        '{"agent":{"id":"bc-created"}}',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = LaunchRepository(
+      catalogRemoteSource: CatalogRemoteSource(CursorApiClient(dio)),
+    );
+
+    final id = await repository.createAgent(
+      const LaunchRequest(
+        prompt: ' Build the feature ',
+        repoUrl: 'https://github.com/acme/app',
+        startingRef: 'main',
+        modelId: 'default',
+      ),
+    );
+
+    expect(id, 'bc-created');
+    expect(seenRequest.path, '/v1/agents');
+    final body = seenRequest.data as Map<String, Object?>;
+    expect(body['prompt'], {'text': 'Build the feature'});
+    expect(body, isNot(contains('model')));
+    expect(body['repos'], [
+      {'url': 'https://github.com/acme/app', 'startingRef': 'main'},
+    ]);
+  });
+
+  test(
+    'loadCatalog reuses cached repositories inside rate-limit window',
+    () async {
+      var repositoryRequests = 0;
+      final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+      dio.httpClientAdapter = _Adapter((options) async {
+        if (options.path == '/v1/repositories') {
+          repositoryRequests += 1;
+          return ResponseBody.fromString(
+            jsonEncode({
+              'items': [
+                {
+                  'name': 'acme/app',
+                  'url': 'https://github.com/acme/app',
+                  'defaultBranch': 'main',
+                },
+              ],
+            }),
+            200,
+            headers: {
+              Headers.contentTypeHeader: ['application/json'],
+            },
+          );
+        }
+        return ResponseBody.fromString(
+          '{"items":[{"id":"gpt-5.5","name":"GPT-5.5"}]}',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      });
+      final repository = LaunchRepository(
+        catalogRemoteSource: CatalogRemoteSource(CursorApiClient(dio)),
+      );
+
+      final first = await repository.loadCatalog();
+      final second = await repository.loadCatalog();
+
+      expect(repositoryRequests, 1);
+      expect(first.repositories.single.defaultBranch, 'main');
+      expect(second.repositories.single.url, 'https://github.com/acme/app');
+      expect(second.models.map((model) => model.id), ['default', 'gpt-5.5']);
+    },
+  );
+
+  test(
+    'loadCatalog returns last cache with message after repository failure',
+    () async {
+      var failRepositories = false;
+      final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+      dio.httpClientAdapter = _Adapter((options) async {
+        if (options.path == '/v1/repositories') {
+          if (failRepositories) {
+            throw DioException(
+              requestOptions: options,
+              type: DioExceptionType.connectionError,
+            );
+          }
+          return ResponseBody.fromString(
+            '{"items":[{"name":"acme/app","url":"https://github.com/acme/app"}]}',
+            200,
+            headers: {
+              Headers.contentTypeHeader: ['application/json'],
+            },
+          );
+        }
+        return ResponseBody.fromString(
+          '{"items":[]}',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      });
+      final repository = LaunchRepository(
+        catalogRemoteSource: CatalogRemoteSource(CursorApiClient(dio)),
+      );
+
+      await repository.loadCatalog(forceRefresh: true);
+      failRepositories = true;
+      final stale = await repository.loadCatalog(forceRefresh: true);
+
+      expect(stale.repositories.single.url, 'https://github.com/acme/app');
+      expect(stale.message, contains('Showing cached catalog'));
+    },
+  );
+}
