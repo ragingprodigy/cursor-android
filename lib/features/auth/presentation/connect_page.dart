@@ -58,16 +58,9 @@ class ConnectPage extends HookWidget {
                     onSubmitted: (_) => _submit(context, controller.text),
                   ),
                   const SizedBox(height: 16),
-                  FilledButton(
-                    onPressed: state.isSubmitting
-                        ? null
-                        : () => _submit(context, controller.text),
-                    child: state.isSubmitting
-                        ? const SizedBox.square(
-                            dimension: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text('Connect'),
+                  _AnimatedConnectButton(
+                    isSubmitting: state.isSubmitting,
+                    onPressed: () => _submit(context, controller.text),
                   ),
                   if (state.status == ConnectStatus.failure &&
                       state.message != null) ...[
@@ -128,5 +121,52 @@ class ConnectPage extends HookWidget {
 
   void _submit(BuildContext context, String apiKey) {
     context.read<ConnectBloc>().add(ConnectSubmitted(apiKey));
+  }
+}
+
+class _AnimatedConnectButton extends HookWidget {
+  const _AnimatedConnectButton({
+    required this.isSubmitting,
+    required this.onPressed,
+  });
+
+  final bool isSubmitting;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final isPressed = useState(false);
+    final scale = isSubmitting ? 0.98 : (isPressed.value ? 0.97 : 1.0);
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: isSubmitting ? null : (_) => isPressed.value = true,
+      onTapUp: (_) => isPressed.value = false,
+      onTapCancel: () => isPressed.value = false,
+      child: AnimatedScale(
+        scale: scale,
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOutCubic,
+        child: FilledButton(
+          onPressed: isSubmitting ? null : onPressed,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            transitionBuilder: (child, animation) {
+              return FadeTransition(
+                opacity: animation,
+                child: ScaleTransition(scale: animation, child: child),
+              );
+            },
+            child: isSubmitting
+                ? const SizedBox.square(
+                    key: ValueKey('connecting'),
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Connect', key: ValueKey('connect')),
+          ),
+        ),
+      ),
+    );
   }
 }

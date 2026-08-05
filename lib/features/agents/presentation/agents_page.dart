@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class AgentsPage extends HookWidget {
   const AgentsPage({super.key});
@@ -59,13 +60,16 @@ class AgentsPage extends HookWidget {
                     _EmptyAgentsPanel(
                       hasFailure: state.status == AgentsStatus.failure,
                     )
-                  else
-                    ...state.agents.map((agent) {
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 12),
-                        child: _AgentCard(agent: agent),
-                      );
-                    }),
+                  else ...[
+                    for (final entry in state.agents.indexed)
+                      _StaggeredFadeSlide(
+                        index: entry.$1,
+                        child: Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: _AgentCard(agent: entry.$2),
+                        ),
+                      ),
+                  ],
                 ],
               ),
             );
@@ -79,6 +83,34 @@ class AgentsPage extends HookWidget {
     final completer = Completer<void>();
     context.read<AgentsBloc>().add(AgentsRefreshed(completer: completer));
     return completer.future;
+  }
+}
+
+class _StaggeredFadeSlide extends StatelessWidget {
+  const _StaggeredFadeSlide({required this.index, required this.child});
+
+  final int index;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final durationMs = 220 + (index < 6 ? index * 35 : 210);
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: Duration(milliseconds: durationMs),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, child) {
+        return Opacity(
+          opacity: value,
+          child: Transform.translate(
+            offset: Offset(0, (1 - value) * 14),
+            child: child,
+          ),
+        );
+      },
+      child: child,
+    );
   }
 }
 
@@ -278,7 +310,20 @@ class _AgentCard extends StatelessWidget {
           padding: const EdgeInsets.only(top: 6),
           child: Text('Updated ${_formatUpdatedAt(agent.updatedAt)}'),
         ),
-        trailing: _StatusPill(status: agent.status),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _StatusPill(status: agent.status),
+            if (agent.url != null) ...[
+              const SizedBox(width: 4),
+              IconButton(
+                tooltip: 'Open agent on web',
+                icon: const Icon(Icons.open_in_new),
+                onPressed: () => _openAgentUrl(context, agent.url!),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -356,82 +401,11 @@ String _formatUpdatedAt(DateTime value) {
   return '${updatedAt.year}-$month-$day';
 }
 
-class NewAgentPage extends HookWidget {
-  const NewAgentPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('New agent')),
-      body: const SafeArea(
-        child: _PlaceholderPanel(
-          icon: Icons.add_task_outlined,
-          title: 'New agent',
-          message: 'Agent creation UI placeholder.',
-        ),
-      ),
-    );
-  }
-}
-
-class AgentDetailPage extends HookWidget {
-  const AgentDetailPage({required this.agentId, super.key});
-
-  final String agentId;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text('Agent $agentId')),
-      body: SafeArea(
-        child: _PlaceholderPanel(
-          icon: Icons.terminal_outlined,
-          title: 'Agent detail',
-          message: 'Thread and run controls placeholder for $agentId.',
-        ),
-      ),
-    );
-  }
-}
-
-class _PlaceholderPanel extends HookWidget {
-  const _PlaceholderPanel({
-    required this.icon,
-    required this.title,
-    required this.message,
-  });
-
-  final IconData icon;
-  final String title;
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Card(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 48, color: theme.colorScheme.primary),
-                const SizedBox(height: 16),
-                Text(title, style: theme.textTheme.headlineMedium),
-                const SizedBox(height: 8),
-                Text(
-                  message,
-                  style: theme.textTheme.bodyLarge,
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+Future<void> _openAgentUrl(BuildContext context, Uri url) async {
+  final launched = await launchUrl(url, mode: LaunchMode.externalApplication);
+  if (!launched && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Could not open agent on web.')),
     );
   }
 }

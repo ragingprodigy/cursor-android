@@ -124,4 +124,43 @@ void main() {
 
     expect(await db.draftsDao.getById('launch'), isNull);
   });
+
+  test('clears all local cache tables', () async {
+    await db.agentsDao.upsertAll([
+      AgentsCompanion.insert(
+        id: 'bc-cache',
+        name: 'Cached agent',
+        status: 'running',
+        url: const Value('https://cursor.com/agents/bc-cache'),
+        latestRunId: const Value('run-cache'),
+        createdAt: DateTime.utc(2026, 4, 1),
+        updatedAt: DateTime.utc(2026, 4, 2),
+        json: '{"id":"bc-cache"}',
+        cachedAt: DateTime.utc(2026, 4, 3),
+      ),
+    ]);
+    await db.threadSnapshotsDao.upsert(
+      ThreadSnapshotsCompanion.insert(
+        agentId: 'bc-cache',
+        json: '{"runs":[]}',
+        cachedAt: DateTime.utc(2026, 4, 4),
+      ),
+    );
+    await db.draftsDao.upsert(
+      DraftsCompanion.insert(
+        id: 'followup:bc-cache',
+        content: 'Keep going',
+        repoUrl: const Value.absent(),
+        startingRef: const Value.absent(),
+        modelId: const Value.absent(),
+        updatedAt: DateTime.utc(2026, 4, 5),
+      ),
+    );
+
+    await db.clearLocalCache();
+
+    expect(await db.agentsDao.getAll(), isEmpty);
+    expect(await db.threadSnapshotsDao.getByAgentId('bc-cache'), isNull);
+    expect(await db.draftsDao.getAll(), isEmpty);
+  });
 }

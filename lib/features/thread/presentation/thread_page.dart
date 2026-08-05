@@ -5,6 +5,7 @@ import 'package:cursor/features/thread/presentation/thread_bloc.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class ThreadPage extends HookWidget {
   const ThreadPage({super.key});
@@ -74,13 +75,14 @@ class ThreadPage extends HookWidget {
                           _EmptyThreadPanel(
                             hasFailure: state.status == ThreadStatus.failure,
                           )
-                        else
-                          ...messages.map((message) {
-                            return Padding(
-                              padding: const EdgeInsets.only(bottom: 12),
-                              child: _MessageBubble(message: message),
-                            );
-                          }),
+                        else ...[
+                          for (final entry in messages.indexed)
+                            _MessageEntry(
+                              key: ValueKey(entry.$2.id),
+                              index: entry.$1,
+                              message: entry.$2,
+                            ),
+                        ],
                       ],
                     ),
                   ),
@@ -98,6 +100,37 @@ class ThreadPage extends HookWidget {
     final completer = Completer<void>();
     context.read<ThreadBloc>().add(ThreadRefreshed(completer: completer));
     return completer.future;
+  }
+}
+
+class _MessageEntry extends StatelessWidget {
+  const _MessageEntry({required this.index, required this.message, super.key});
+
+  final int index;
+  final ThreadMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final durationMs = 180 + (index < 6 ? index * 25 : 150);
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: Duration(milliseconds: durationMs),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, child) {
+        return Opacity(
+          opacity: value,
+          child: Transform.translate(
+            offset: Offset(0, (1 - value) * 10),
+            child: child,
+          ),
+        );
+      },
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: _MessageBubble(message: message),
+      ),
+    );
   }
 }
 
@@ -137,6 +170,7 @@ class _ThreadHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final agent = state.agent;
+    final url = agent?.url;
 
     return Card(
       child: Padding(
@@ -184,6 +218,17 @@ class _ThreadHeader extends StatelessWidget {
                 style: theme.textTheme.bodyMedium,
               ),
             ],
+            if (url != null) ...[
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () => _openAgentUrl(context, url),
+                  icon: const Icon(Icons.open_in_new),
+                  label: const Text('Open agent on web'),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -223,6 +268,15 @@ class _StatusBanner extends StatelessWidget {
           Expanded(child: Text(message)),
         ],
       ),
+    );
+  }
+}
+
+Future<void> _openAgentUrl(BuildContext context, Uri url) async {
+  final launched = await launchUrl(url, mode: LaunchMode.externalApplication);
+  if (!launched && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Could not open agent on web.')),
     );
   }
 }

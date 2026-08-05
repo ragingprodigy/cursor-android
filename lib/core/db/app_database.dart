@@ -150,6 +150,14 @@ class AppDatabase extends _$AppDatabase {
 
   @override
   int get schemaVersion => 1;
+
+  Future<void> clearLocalCache() {
+    return batch((batch) {
+      batch.deleteAll(agents);
+      batch.deleteAll(threadSnapshots);
+      batch.deleteAll(drafts);
+    });
+  }
 }
 
 bool _linuxSqliteOverrideInstalled = false;

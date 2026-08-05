@@ -64,7 +64,10 @@ GoRouter createAppRouter(AppDependencies dependencies) {
       GoRoute(
         path: '/settings',
         builder: (context, state) {
-          return SettingsPage(authSession: dependencies.authSession);
+          return SettingsPage(
+            authSession: dependencies.authSession,
+            database: dependencies.database,
+          );
         },
       ),
     ],
