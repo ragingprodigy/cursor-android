@@ -10,8 +10,8 @@ class CatalogRemoteSource {
   final CursorApiClient _apiClient;
 
   Future<List<LaunchRepositoryOption>> listRepositories() async {
-    // The repositories catalog endpoint is rate-limited; callers should avoid
-    // polling it and prefer user-triggered refreshes.
+    // Historically this endpoint has had strict rate limits, so callers cache
+    // aggressively and avoid polling in favor of user-triggered refreshes.
     final response = await _apiClient.get<Map<String, dynamic>>(
       '/v1/repositories',
     );

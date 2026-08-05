@@ -1,8 +1,10 @@
 import 'dart:convert';
 
+import 'package:cursor/core/db/app_database.dart';
 import 'package:cursor/core/network/cursor_api_client.dart';
 import 'package:cursor/features/launch/data/catalog_remote_source.dart';
 import 'package:cursor/features/launch/data/launch_repository.dart';
+import 'package:cursor/features/thread/data/run_prompt_store.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -25,6 +27,16 @@ class _Adapter implements HttpClientAdapter {
 }
 
 void main() {
+  late AppDatabase database;
+
+  setUp(() {
+    database = AppDatabase.memory();
+  });
+
+  tearDown(() async {
+    await database.close();
+  });
+
   test('createAgent omits model when Default is selected', () async {
     late RequestOptions seenRequest;
     final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
@@ -60,6 +72,63 @@ void main() {
       {'url': 'https://github.com/acme/app', 'startingRef': 'main'},
     ]);
   });
+
+  test('createAgent saves initial prompt for returned run id', () async {
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      return ResponseBody.fromString(
+        '{"agent":{"id":"bc-created"},"run":{"id":"run-created"}}',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = LaunchRepository(
+      catalogRemoteSource: CatalogRemoteSource(CursorApiClient(dio)),
+      runPromptStore: RunPromptStore(database.runPromptsDao),
+    );
+
+    final id = await repository.createAgent(
+      const LaunchRequest(prompt: ' Ship the app '),
+    );
+
+    final prompt = await database.runPromptsDao.getByRunId(
+      'bc-created',
+      'run-created',
+    );
+    expect(id, 'bc-created');
+    expect(prompt!.content, 'Ship the app');
+  });
+
+  test(
+    'createAgent saves pending initial prompt when run id is absent',
+    () async {
+      final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+      dio.httpClientAdapter = _Adapter((options) async {
+        return ResponseBody.fromString(
+          '{"agent":{"id":"bc-created"}}',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      });
+      final store = RunPromptStore(database.runPromptsDao);
+      final repository = LaunchRepository(
+        catalogRemoteSource: CatalogRemoteSource(CursorApiClient(dio)),
+        runPromptStore: store,
+      );
+
+      await repository.createAgent(
+        const LaunchRequest(prompt: 'Build first run prompt'),
+      );
+
+      final prompts = await store.loadForAgent('bc-created');
+      expect(prompts.pendingInitialPrompt, 'Build first run prompt');
+      expect(prompts.byRunId, isEmpty);
+    },
+  );
 
   test(
     'loadCatalog reuses cached repositories inside rate-limit window',

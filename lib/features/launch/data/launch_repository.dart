@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'package:cursor/core/error/app_exception.dart';
 import 'package:cursor/features/launch/data/catalog_remote_source.dart';
 import 'package:cursor/features/launch/domain/launch_catalog.dart';
+import 'package:cursor/features/thread/data/run_prompt_store.dart';
 import 'package:equatable/equatable.dart';
 
 class LaunchRequest extends Equatable {
@@ -23,12 +25,15 @@ class LaunchRequest extends Equatable {
 }
 
 class LaunchRepository {
-  LaunchRepository({required CatalogRemoteSource catalogRemoteSource})
-    : this._(catalogRemoteSource);
+  LaunchRepository({
+    required CatalogRemoteSource catalogRemoteSource,
+    RunPromptStore? runPromptStore,
+  }) : this._(catalogRemoteSource, runPromptStore);
 
-  LaunchRepository._(this._catalogRemoteSource);
+  LaunchRepository._(this._catalogRemoteSource, this._runPromptStore);
 
   final CatalogRemoteSource _catalogRemoteSource;
+  final RunPromptStore? _runPromptStore;
 
   static const _repositoryCacheTtl = Duration(hours: 1);
   static const _modelCacheTtl = Duration(hours: 1);
@@ -58,7 +63,13 @@ class LaunchRepository {
     final response = await _catalogRemoteSource.createAgent(
       _bodyFromRequest(request),
     );
-    return _agentIdFromResponse(response);
+    final created = _createdAgentFromResponse(response);
+    await _saveInitialPrompt(
+      agentId: created.agentId,
+      runId: created.initialRunId,
+      text: request.prompt,
+    );
+    return created.agentId;
   }
 
   Future<List<LaunchRepositoryOption>> _loadRepositories({
@@ -139,22 +150,53 @@ class LaunchRepository {
     };
   }
 
-  String _agentIdFromResponse(Object? data) {
+  _CreatedAgent _createdAgentFromResponse(Object? data) {
     final payload = _asMap(data);
     final agent = payload['agent'];
     if (agent is Map<String, dynamic>) {
       final id = _stringAt(agent, 'id');
       if (id != null) {
-        return id;
+        return _CreatedAgent(
+          agentId: id,
+          initialRunId:
+              _runIdFromPayload(payload) ??
+              _stringAt(agent, 'latestRunId') ??
+              _stringAt(agent, 'latest_run_id'),
+        );
       }
     }
     final id = _stringAt(payload, 'id') ?? _stringAt(payload, 'agentId');
     if (id != null) {
-      return id;
+      return _CreatedAgent(
+        agentId: id,
+        initialRunId: _runIdFromPayload(payload),
+      );
     }
     throw const ApiException(
       'Cursor create agent response was missing agent id.',
     );
+  }
+
+  String? _runIdFromPayload(Map<String, dynamic> payload) {
+    final direct =
+        _stringAt(payload, 'runId') ??
+        _stringAt(payload, 'run_id') ??
+        _stringAt(payload, 'latestRunId') ??
+        _stringAt(payload, 'latest_run_id');
+    if (direct != null) {
+      return direct;
+    }
+
+    for (final key in const ['run', 'initialRun', 'initial_run', 'latestRun']) {
+      final value = payload[key];
+      if (value is Map<String, dynamic>) {
+        final id = _stringAt(value, 'id') ?? _stringAt(value, 'runId');
+        if (id != null) {
+          return id;
+        }
+      }
+    }
+    return null;
   }
 
   Map<String, dynamic> _asMap(Object? data) {
@@ -190,6 +232,39 @@ class LaunchRepository {
     }
     return '$message Catalog options may be empty.';
   }
+
+  Future<void> _saveInitialPrompt({
+    required String agentId,
+    required String? runId,
+    required String text,
+  }) async {
+    final store = _runPromptStore;
+    if (store == null) {
+      return;
+    }
+
+    try {
+      if (runId == null) {
+        await store.savePendingInitialPrompt(agentId: agentId, text: text);
+      } else {
+        await store.savePrompt(agentId: agentId, runId: runId, text: text);
+      }
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to save initial run prompt.',
+        name: 'LaunchRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+}
+
+class _CreatedAgent {
+  const _CreatedAgent({required this.agentId, required this.initialRunId});
+
+  final String agentId;
+  final String? initialRunId;
 }
 
 class _CacheEntry<T> {

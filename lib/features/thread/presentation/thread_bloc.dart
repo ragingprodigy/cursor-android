@@ -468,6 +468,24 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     late final AgentRun run;
     try {
       run = await _repository.sendFollowUp(_agentId, text);
+    } on ApiException catch (error) {
+      if (error.statusCode == 409) {
+        emit(
+          _withActionMessage(
+            'Agent is busy. Refreshing thread status.',
+            state.copyWith(isSendingFollowUp: false),
+          ),
+        );
+        add(const ThreadRefreshed());
+        return;
+      }
+      emit(
+        _withActionMessage(
+          error.message,
+          state.copyWith(isSendingFollowUp: false),
+        ),
+      );
+      return;
     } on AppException catch (error) {
       emit(
         _withActionMessage(
@@ -773,15 +791,15 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       // Ignore malformed tool_call payloads.
     }
 
-    final id =
-        _stringAt(step, 'id') ??
-        _stringAt(step, 'stepId') ??
-        'tool-${_liveToolStepsById.length}';
     final label =
         _stringAt(step, 'name') ??
         _stringAt(step, 'label') ??
         _stringAt(step, 'tool') ??
         'Tool step';
+    final id =
+        _stringAt(step, 'callId') ??
+        _stringAt(step, 'call_id') ??
+        '$label:${_indexAt(step) ?? _liveToolStepsById.length}';
     final status =
         _stringAt(step, 'status') ?? _stringAt(step, 'state') ?? 'running';
     final text = _stringAt(step, 'output') ?? _stringAt(step, 'text');
@@ -800,6 +818,19 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     final value = json[key];
     if (value is String && value.trim().isNotEmpty) {
       return value.trim();
+    }
+    return null;
+  }
+
+  String? _indexAt(Map<String, Object?> json) {
+    for (final key in const ['index', 'stepIndex', 'step_index']) {
+      final value = json[key];
+      if (value is int) {
+        return value.toString();
+      }
+      if (value is String && value.trim().isNotEmpty) {
+        return value.trim();
+      }
     }
     return null;
   }

@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'package:cursor/core/db/app_database.dart';
 import 'package:cursor/core/error/app_exception.dart';
 import 'package:cursor/core/network/cursor_api_client.dart';
 import 'package:cursor/core/network/sse_client.dart';
+import 'package:cursor/features/thread/data/run_prompt_store.dart';
 import 'package:cursor/features/thread/data/thread_message_mapper.dart';
 import 'package:cursor/features/thread/domain/agent_detail.dart';
 import 'package:cursor/features/thread/domain/agent_run.dart';
@@ -88,16 +90,25 @@ class ThreadRepository {
     required CursorApiClient apiClient,
     required AppDatabase database,
     required SseClient sseClient,
-  }) : this._(apiClient, database, sseClient);
+    RunPromptStore? runPromptStore,
+  }) : this._(apiClient, database, sseClient, runPromptStore);
 
-  ThreadRepository._(this._apiClient, this._database, this._sseClient);
+  ThreadRepository._(
+    this._apiClient,
+    this._database,
+    this._sseClient,
+    this._runPromptStore,
+  );
 
   final CursorApiClient _apiClient;
   final AppDatabase _database;
   final SseClient _sseClient;
+  final RunPromptStore? _runPromptStore;
 
   Stream<ThreadSnapshot> watchCache(String agentId) {
-    return _database.threadSnapshotsDao.watchByAgentId(agentId).map((row) {
+    return _database.threadSnapshotsDao.watchByAgentId(agentId).asyncMap((
+      row,
+    ) async {
       if (row == null) {
         return ThreadSnapshot.cached(agent: null);
       }
@@ -130,7 +141,8 @@ class ThreadRepository {
         ),
       );
 
-      return ThreadSnapshot.fresh(agent: agent, runs: runs);
+      final messages = await _messagesFromRuns(agentId, runs);
+      return ThreadSnapshot.fresh(agent: agent, runs: runs, messages: messages);
     } on NetworkException {
       return _readStaleCache(agentId, isOffline: true);
     }
@@ -170,7 +182,9 @@ class ThreadRepository {
         'prompt': {'text': text},
       },
     );
-    return _runFromResponse(response.data, agentId: agentId);
+    final run = _runFromResponse(response.data, agentId: agentId);
+    await _saveRunPrompt(agentId: agentId, runId: run.id, text: text);
+    return run;
   }
 
   Future<void> cancelRun(String agentId, String runId) async {
@@ -201,11 +215,11 @@ class ThreadRepository {
     return _snapshotFromRow(row, isStale: true, isOffline: isOffline);
   }
 
-  ThreadSnapshot _snapshotFromRow(
+  Future<ThreadSnapshot> _snapshotFromRow(
     ThreadSnapshotRow row, {
     required bool isStale,
     required bool isOffline,
-  }) {
+  }) async {
     try {
       final payload = _asMap(row.json, 'cached thread snapshot');
       final agentJson = payload['agent'];
@@ -213,11 +227,13 @@ class ThreadRepository {
           ? _agentFromJson(_stringKeyedMap(agentJson), fallbackId: row.agentId)
           : null;
       final runs = _runsFromItems(payload['runs'], agentId: row.agentId);
+      final messages = await _messagesFromRuns(row.agentId, runs);
 
       if (isStale) {
         return ThreadSnapshot.stale(
           agent: agent,
           runs: runs,
+          messages: messages,
           isOffline: isOffline,
           cachedAt: row.cachedAt.toUtc(),
         );
@@ -225,6 +241,7 @@ class ThreadRepository {
       return ThreadSnapshot.cached(
         agent: agent,
         runs: runs,
+        messages: messages,
         cachedAt: row.cachedAt.toUtc(),
       );
     } on AppException {
@@ -232,6 +249,59 @@ class ThreadRepository {
         return ThreadSnapshot.stale(agent: null, isOffline: isOffline);
       }
       return ThreadSnapshot.cached(agent: null);
+    }
+  }
+
+  Future<List<ThreadMessage>> _messagesFromRuns(
+    String agentId,
+    List<AgentRun> runs,
+  ) async {
+    final promptIndex = await _loadRunPromptIndex(agentId);
+    return mapRunsToMessages(
+      runs,
+      promptTextByRunId: promptIndex.byRunId,
+      pendingInitialPromptText: promptIndex.pendingInitialPrompt,
+    );
+  }
+
+  Future<RunPromptIndex> _loadRunPromptIndex(String agentId) async {
+    final store = _runPromptStore;
+    if (store == null) {
+      return RunPromptIndex.empty;
+    }
+
+    try {
+      return await store.loadForAgent(agentId);
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to load saved run prompts.',
+        name: 'ThreadRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return RunPromptIndex.empty;
+    }
+  }
+
+  Future<void> _saveRunPrompt({
+    required String agentId,
+    required String runId,
+    required String text,
+  }) async {
+    final store = _runPromptStore;
+    if (store == null) {
+      return;
+    }
+
+    try {
+      await store.savePrompt(agentId: agentId, runId: runId, text: text);
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to save run prompt.',
+        name: 'ThreadRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
   }
 

@@ -2,6 +2,7 @@ import 'package:cursor/core/db/app_database.dart';
 import 'package:cursor/core/error/app_exception.dart';
 import 'package:cursor/core/network/cursor_api_client.dart';
 import 'package:cursor/core/network/sse_client.dart';
+import 'package:cursor/features/thread/data/run_prompt_store.dart';
 import 'package:cursor/features/thread/data/thread_repository.dart';
 import 'package:cursor/features/thread/domain/thread_message.dart';
 import 'package:dio/dio.dart';
@@ -225,9 +226,11 @@ void main() {
       apiClient: CursorApiClient(dio),
       database: database,
       sseClient: SseClient(dio),
+      runPromptStore: RunPromptStore(database.runPromptsDao),
     );
 
     final run = await repository.sendFollowUp('bc-1', 'Keep going');
+    final prompt = await database.runPromptsDao.getByRunId('bc-1', 'run-3');
 
     expect(seen!.method, 'POST');
     expect(seen!.path, '/v1/agents/bc-1/runs');
@@ -237,6 +240,116 @@ void main() {
     expect(run.id, 'run-3');
     expect(run.status, 'CREATING');
     expect(run.isActive, isTrue);
+    expect(prompt!.content, 'Keep going');
+  });
+
+  test('load merges stored run prompts when API omits prompt text', () async {
+    final store = RunPromptStore(database.runPromptsDao);
+    await store.savePrompt(
+      agentId: 'bc-1',
+      runId: 'run-1',
+      text: 'Persisted follow-up',
+    );
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      if (options.path == '/v1/agents/bc-1') {
+        return ResponseBody.fromString(
+          '{"agent":{"id":"bc-1","name":"Agent","status":"completed"}}',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      }
+      return ResponseBody.fromString(
+        '''
+        {
+          "items": [
+            {
+              "id": "run-1",
+              "status": "completed",
+              "resultText": "Done",
+              "createdAt": "2026-08-01T10:05:00.000Z"
+            }
+          ]
+        }
+        ''',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = ThreadRepository(
+      apiClient: CursorApiClient(dio),
+      database: database,
+      sseClient: SseClient(dio),
+      runPromptStore: store,
+    );
+
+    final snapshot = await repository.load('bc-1');
+
+    expect(snapshot.messages.first, isA<UserMessage>());
+    expect(
+      (snapshot.messages.first as UserMessage).text,
+      'Persisted follow-up',
+    );
+    expect(snapshot.messages.whereType<AssistantMessage>().single.text, 'Done');
+  });
+
+  test('cached snapshot reload uses pending initial prompt', () async {
+    final store = RunPromptStore(database.runPromptsDao);
+    await store.savePendingInitialPrompt(
+      agentId: 'bc-cached',
+      text: 'Persisted launch prompt',
+    );
+    await database.threadSnapshotsDao.upsert(
+      ThreadSnapshotsCompanion.insert(
+        agentId: 'bc-cached',
+        json: '''
+        {
+          "agent": {
+            "id": "bc-cached",
+            "name": "Cached agent",
+            "status": "completed",
+            "createdAt": "2026-08-01T10:00:00.000Z",
+            "updatedAt": "2026-08-01T10:00:00.000Z"
+          },
+          "runs": [
+            {
+              "id": "run-cached",
+              "status": "completed",
+              "resultText": "Cached result",
+              "createdAt": "2026-08-01T10:05:00.000Z"
+            }
+          ]
+        }
+        ''',
+        cachedAt: DateTime.utc(2026, 8, 1, 11),
+      ),
+    );
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      throw DioException(
+        requestOptions: options,
+        type: DioExceptionType.connectionError,
+      );
+    });
+    final repository = ThreadRepository(
+      apiClient: CursorApiClient(dio),
+      database: database,
+      sseClient: SseClient(dio),
+      runPromptStore: store,
+    );
+
+    final snapshot = await repository.load('bc-cached');
+
+    expect(snapshot.isStale, isTrue);
+    expect(snapshot.messages.first, isA<UserMessage>());
+    expect(
+      (snapshot.messages.first as UserMessage).text,
+      'Persisted launch prompt',
+    );
   });
 
   test('cancelRun posts to the cancel endpoint', () async {

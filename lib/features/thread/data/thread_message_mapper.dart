@@ -18,12 +18,20 @@ AgentRun? latestAgentRun(Iterable<AgentRun> runs) {
   return sorted.isEmpty ? null : sorted.last;
 }
 
-List<ThreadMessage> mapRunsToMessages(Iterable<AgentRun> runs) {
+List<ThreadMessage> mapRunsToMessages(
+  Iterable<AgentRun> runs, {
+  Map<String, String> promptTextByRunId = const {},
+  String? pendingInitialPromptText,
+}) {
   final sortedRuns = sortRunsByCreatedAt(runs);
   final messages = <ThreadMessage>[];
 
-  for (final run in sortedRuns) {
-    final promptText = _blankToNull(run.promptText);
+  for (final indexedRun in sortedRuns.indexed) {
+    final run = indexedRun.$2;
+    final promptText =
+        _blankToNull(run.promptText) ??
+        _blankToNull(promptTextByRunId[run.id]) ??
+        (indexedRun.$1 == 0 ? _blankToNull(pendingInitialPromptText) : null);
     if (promptText != null) {
       messages.add(
         UserMessage(

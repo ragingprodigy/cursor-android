@@ -150,6 +150,40 @@ void main() {
     ],
   );
 
+  blocTest<ThreadBloc, ThreadState>(
+    'refresh displays user messages restored from stored prompts',
+    build: () {
+      when(() => repository.load('bc-1')).thenAnswer((_) async {
+        return ThreadSnapshot.fresh(
+          agent: agent,
+          messages: [
+            UserMessage(
+              id: 'run-restored:user',
+              runId: 'run-restored',
+              text: 'Persisted prompt',
+              createdAt: DateTime.utc(2026, 8, 5, 12),
+            ),
+            AssistantMessage(
+              id: 'run-restored:assistant',
+              runId: 'run-restored',
+              text: 'Restored result',
+              createdAt: DateTime.utc(2026, 8, 5, 12, 1),
+            ),
+          ],
+        );
+      });
+      return buildBloc();
+    },
+    act: (bloc) => bloc.add(const ThreadRefreshed()),
+    verify: (bloc) {
+      expect(bloc.state.messages.first, isA<UserMessage>());
+      expect(
+        (bloc.state.messages.first as UserMessage).text,
+        'Persisted prompt',
+      );
+    },
+  );
+
   group('disable send while a run is active', () {
     final activeRun = AgentRun(
       id: 'run-active',
@@ -371,6 +405,45 @@ void main() {
     );
 
     blocTest<ThreadBloc, ThreadState>(
+      'treats a 409 response as non-fatal and refreshes',
+      seed: () => ThreadState.ready(
+        'bc-1',
+        agent: agent,
+        messages: const [],
+        followUpDraft: 'Keep going',
+      ),
+      build: () {
+        when(
+          () => repository.sendFollowUp('bc-1', 'Keep going'),
+        ).thenThrow(const ApiException('agent_busy', statusCode: 409));
+        when(() => repository.load('bc-1')).thenAnswer((_) async {
+          return ThreadSnapshot.fresh(
+            agent: agent,
+            runs: [
+              AgentRun(
+                id: 'run-active',
+                status: 'RUNNING',
+                createdAt: DateTime.utc(2026, 8, 5, 12),
+              ),
+            ],
+          );
+        });
+        return buildBloc();
+      },
+      act: (bloc) => bloc.add(const ThreadFollowUpSubmitted('Keep going')),
+      wait: const Duration(milliseconds: 10),
+      verify: (bloc) {
+        verify(() => repository.load('bc-1')).called(1);
+        expect(bloc.state.isSendingFollowUp, isFalse);
+        expect(
+          bloc.state.actionMessage,
+          'Agent is busy. Refreshing thread status.',
+        );
+        expect(bloc.state.isLatestRunActive, isTrue);
+      },
+    );
+
+    blocTest<ThreadBloc, ThreadState>(
       'draft changes are persisted to the store',
       build: buildBloc,
       act: (bloc) => bloc.add(const ThreadFollowUpDraftChanged('Ship it')),
@@ -536,7 +609,8 @@ void main() {
         sseController.add(
           const SseEvent(
             event: 'tool_call',
-            data: '{"name":"flutter test","status":"running"}',
+            data:
+                '{"callId":"call-1","name":"flutter test","status":"running"}',
           ),
         );
         await Future<void>.delayed(Duration.zero);
@@ -545,6 +619,18 @@ void main() {
           (bloc.state.liveToolSteps.single as ToolStepMessage).label,
           'flutter test',
         );
+        sseController.add(
+          const SseEvent(
+            event: 'tool_call',
+            data:
+                '{"callId":"call-1","name":"flutter test","status":"completed","output":"ok"}',
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(bloc.state.liveToolSteps, hasLength(1));
+        final toolStep = bloc.state.liveToolSteps.single as ToolStepMessage;
+        expect(toolStep.status, 'completed');
+        expect(toolStep.text, 'ok');
         expect(
           bloc.state.displayMessages.whereType<AssistantMessage>().last.text,
           'Hello',

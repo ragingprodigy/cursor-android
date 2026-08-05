@@ -60,4 +60,36 @@ void main() {
     expect((messages[1] as ToolStepMessage).text, 'All tests passed');
     expect(messages[2], isA<AssistantMessage>());
   });
+
+  test('fills missing prompt text from stored run prompts', () {
+    final messages = mapRunsToMessages(
+      [
+        AgentRun(
+          id: 'run-1',
+          status: 'completed',
+          resultText: 'Done',
+          createdAt: DateTime.utc(2026, 8, 5, 10),
+        ),
+      ],
+      promptTextByRunId: const {'run-1': 'Persisted prompt'},
+    );
+
+    expect(messages, hasLength(2));
+    expect(messages.first, isA<UserMessage>());
+    expect((messages.first as UserMessage).text, 'Persisted prompt');
+  });
+
+  test('uses pending initial prompt for the first run without prompt text', () {
+    final messages = mapRunsToMessages([
+      AgentRun(
+        id: 'run-1',
+        status: 'completed',
+        resultText: 'Done',
+        createdAt: DateTime.utc(2026, 8, 5, 10),
+      ),
+    ], pendingInitialPromptText: 'Pending launch prompt');
+
+    expect(messages.first, isA<UserMessage>());
+    expect((messages.first as UserMessage).text, 'Pending launch prompt');
+  });
 }

@@ -125,6 +125,33 @@ void main() {
     expect(await db.draftsDao.getById('launch'), isNull);
   });
 
+  test('upserts and reads run prompts by agent id', () async {
+    await db.runPromptsDao.upsert(
+      RunPromptsCompanion.insert(
+        agentId: 'bc-1',
+        runId: 'run-1',
+        content: 'Build the Android app',
+        createdAt: DateTime.utc(2026, 3, 3),
+      ),
+    );
+
+    await db.runPromptsDao.upsert(
+      RunPromptsCompanion.insert(
+        agentId: 'bc-1',
+        runId: 'run-1',
+        content: 'Build the Android app again',
+        createdAt: DateTime.utc(2026, 3, 4),
+      ),
+    );
+
+    final row = await db.runPromptsDao.getByRunId('bc-1', 'run-1');
+    final rows = await db.runPromptsDao.getByAgentId('bc-1');
+
+    expect(row, isNotNull);
+    expect(row!.content, 'Build the Android app again');
+    expect(rows.map((prompt) => prompt.runId), ['run-1']);
+  });
+
   test('clears all local cache tables', () async {
     await db.agentsDao.upsertAll([
       AgentsCompanion.insert(
@@ -156,11 +183,20 @@ void main() {
         updatedAt: DateTime.utc(2026, 4, 5),
       ),
     );
+    await db.runPromptsDao.upsert(
+      RunPromptsCompanion.insert(
+        agentId: 'bc-cache',
+        runId: 'run-cache',
+        content: 'Cached prompt',
+        createdAt: DateTime.utc(2026, 4, 6),
+      ),
+    );
 
     await db.clearLocalCache();
 
     expect(await db.agentsDao.getAll(), isEmpty);
     expect(await db.threadSnapshotsDao.getByAgentId('bc-cache'), isNull);
     expect(await db.draftsDao.getAll(), isEmpty);
+    expect(await db.runPromptsDao.getByAgentId('bc-cache'), isEmpty);
   });
 }

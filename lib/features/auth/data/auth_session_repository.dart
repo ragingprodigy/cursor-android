@@ -27,10 +27,11 @@ class AuthSessionRepository extends ChangeNotifier {
   final AppConfig _config;
 
   ApiKeyInfo? _currentInfo;
+  bool _hasSessionKey = false;
 
   ApiKeyInfo? get currentInfo => _currentInfo;
 
-  bool get isAuthenticated => _currentInfo != null;
+  bool get isAuthenticated => _hasSessionKey;
 
   Future<ApiKeyInfo?> restore() async {
     final storedKey = _normalize(await _credentials.readApiKey());
@@ -46,11 +47,14 @@ class AuthSessionRepository extends ChangeNotifier {
 
     try {
       final info = await _remoteSource.me();
-      _setCurrentInfo(info);
+      _setSession(hasSessionKey: true, info: info);
       return info;
     } on UnauthorizedException {
       await _credentials.clear();
       _clearClientSession();
+      return null;
+    } on AppException {
+      _setSession(hasSessionKey: true, info: null);
       return null;
     }
   }
@@ -66,7 +70,7 @@ class AuthSessionRepository extends ChangeNotifier {
     try {
       final info = await _remoteSource.me();
       await _credentials.saveApiKey(trimmed);
-      _setCurrentInfo(info);
+      _setSession(hasSessionKey: true, info: info);
       return info;
     } on UnauthorizedException {
       _clearClientSession();
@@ -86,14 +90,15 @@ class AuthSessionRepository extends ChangeNotifier {
 
   void _clearClientSession() {
     _apiClient.setApiKey(null);
-    _setCurrentInfo(null);
+    _setSession(hasSessionKey: false, info: null);
   }
 
-  void _setCurrentInfo(ApiKeyInfo? info) {
-    if (_currentInfo == info) {
+  void _setSession({required bool hasSessionKey, required ApiKeyInfo? info}) {
+    if (_hasSessionKey == hasSessionKey && _currentInfo == info) {
       return;
     }
 
+    _hasSessionKey = hasSessionKey;
     _currentInfo = info;
     notifyListeners();
   }

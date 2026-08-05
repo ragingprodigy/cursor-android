@@ -13,6 +13,7 @@ import 'package:cursor/features/launch/data/launch_draft_store.dart';
 import 'package:cursor/features/launch/data/launch_repository.dart';
 import 'package:cursor/features/launch/presentation/launch_bloc.dart';
 import 'package:cursor/features/thread/data/follow_up_draft_store.dart';
+import 'package:cursor/features/thread/data/run_prompt_store.dart';
 import 'package:cursor/features/thread/data/thread_repository.dart';
 import 'package:cursor/features/thread/presentation/thread_bloc.dart';
 import 'package:dio/dio.dart';
@@ -59,9 +60,13 @@ class AppDependencies {
     apiClient: cursorApiClient,
     database: database,
     sseClient: sseClient,
+    runPromptStore: runPromptStore,
   );
   late final FollowUpDraftStore followUpDraftStore = FollowUpDraftStore(
     database.draftsDao,
+  );
+  late final RunPromptStore runPromptStore = RunPromptStore(
+    database.runPromptsDao,
   );
   late final CatalogRemoteSource catalogRemoteSource = CatalogRemoteSource(
     cursorApiClient,
@@ -71,6 +76,7 @@ class AppDependencies {
   );
   late final LaunchRepository launchRepository = LaunchRepository(
     catalogRemoteSource: catalogRemoteSource,
+    runPromptStore: runPromptStore,
   );
   late final AuthSessionRepository authSession =
       _authSessionOverride ??

@@ -47,6 +47,17 @@ class Drafts extends Table {
   Set<Column<Object>> get primaryKey => {id};
 }
 
+@DataClassName('RunPromptRow')
+class RunPrompts extends Table {
+  TextColumn get agentId => text()();
+  TextColumn get runId => text()();
+  TextColumn get content => text().named('text')();
+  DateTimeColumn get createdAt => dateTime()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {agentId, runId};
+}
+
 @DriftAccessor(tables: [Agents])
 class AgentsDao extends DatabaseAccessor<AppDatabase> with _$AgentsDaoMixin {
   AgentsDao(super.db);
@@ -137,9 +148,40 @@ class DraftsDao extends DatabaseAccessor<AppDatabase> with _$DraftsDaoMixin {
   }
 }
 
+@DriftAccessor(tables: [RunPrompts])
+class RunPromptsDao extends DatabaseAccessor<AppDatabase>
+    with _$RunPromptsDaoMixin {
+  RunPromptsDao(super.db);
+
+  Future<List<RunPromptRow>> getByAgentId(String agentId) {
+    return (select(runPrompts)
+          ..where((prompt) => prompt.agentId.equals(agentId))
+          ..orderBy([(prompt) => OrderingTerm.asc(prompt.createdAt)]))
+        .get();
+  }
+
+  Future<RunPromptRow?> getByRunId(String agentId, String runId) {
+    return (select(runPrompts)..where(
+          (prompt) =>
+              prompt.agentId.equals(agentId) & prompt.runId.equals(runId),
+        ))
+        .getSingleOrNull();
+  }
+
+  Future<void> upsert(RunPromptsCompanion row) {
+    return into(runPrompts).insertOnConflictUpdate(row);
+  }
+
+  Future<int> deleteByAgentId(String agentId) {
+    return (delete(
+      runPrompts,
+    )..where((prompt) => prompt.agentId.equals(agentId))).go();
+  }
+}
+
 @DriftDatabase(
-  tables: [Agents, ThreadSnapshots, Drafts],
-  daos: [AgentsDao, ThreadSnapshotsDao, DraftsDao],
+  tables: [Agents, ThreadSnapshots, Drafts, RunPrompts],
+  daos: [AgentsDao, ThreadSnapshotsDao, DraftsDao, RunPromptsDao],
 )
 class AppDatabase extends _$AppDatabase {
   AppDatabase(super.executor);
@@ -149,13 +191,25 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.defaults() : this(_openDefaultDatabase());
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration {
+    return MigrationStrategy(
+      onUpgrade: (migrator, from, to) async {
+        if (from < 2) {
+          await migrator.createTable(runPrompts);
+        }
+      },
+    );
+  }
 
   Future<void> clearLocalCache() {
     return batch((batch) {
       batch.deleteAll(agents);
       batch.deleteAll(threadSnapshots);
       batch.deleteAll(drafts);
+      batch.deleteAll(runPrompts);
     });
   }
 }
