@@ -102,4 +102,22 @@ void main() {
     act: (bloc) => bloc.add(const AgentsRefreshed()),
     expect: () => const [AgentsState.failure('Cursor API request failed')],
   );
+
+  blocTest<AgentsBloc, AgentsState>(
+    'refresh failure with ready agents preserves list and error message',
+    build: () {
+      when(
+        () => repository.refresh(),
+      ).thenThrow(const ApiException('Cursor API request failed'));
+      return AgentsBloc(repository);
+    },
+    seed: () => AgentsState.ready([remoteAgent]),
+    act: (bloc) => bloc.add(const AgentsRefreshed()),
+    expect: () => [
+      AgentsState.failure(
+        'Cursor API request failed',
+        agents: [remoteAgent],
+      ),
+    ],
+  );
 }

@@ -72,14 +72,16 @@ class AgentsState extends Equatable {
         isStale: false,
       );
 
-  const AgentsState.failure(String message)
-    : this._(
-        status: AgentsStatus.failure,
-        agents: const [],
-        isOffline: false,
-        isStale: false,
-        message: message,
-      );
+  const AgentsState.failure(
+    String message, {
+    List<AgentSummary> agents = const [],
+  }) : this._(
+         status: AgentsStatus.failure,
+         agents: agents,
+         isOffline: false,
+         isStale: false,
+         message: message,
+       );
 
   final AgentsStatus status;
   final List<AgentSummary> agents;
@@ -102,6 +104,7 @@ class AgentsBloc extends Bloc<AgentsEvent, AgentsState> {
 
   final AgentsRepository _repository;
   StreamSubscription<AgentsSnapshot>? _cacheSubscription;
+  List<AgentSummary> _lastCachedAgents = const [];
 
   Future<void> _onStarted(
     AgentsStarted event,
@@ -136,15 +139,37 @@ class AgentsBloc extends Bloc<AgentsEvent, AgentsState> {
       }
       emit(AgentsState.ready(snapshot.agents));
     } on AppException catch (error) {
-      emit(AgentsState.failure(error.message));
+      emit(_failurePreservingAgents(error.message));
     } catch (_) {
-      emit(const AgentsState.failure('Unable to load agents.'));
+      emit(_failurePreservingAgents('Unable to load agents.'));
     } finally {
       event.completer?.complete();
     }
   }
 
+  AgentsState _failurePreservingAgents(String message) {
+    final agents = _agentsToPreserve();
+    if (agents.isEmpty) {
+      return AgentsState.failure(message);
+    }
+    return AgentsState.failure(message, agents: agents);
+  }
+
+  List<AgentSummary> _agentsToPreserve() {
+    if (state.agents.isNotEmpty) {
+      return state.agents;
+    }
+    if (_lastCachedAgents.isNotEmpty) {
+      return _lastCachedAgents;
+    }
+    return const [];
+  }
+
   void _onCacheChanged(_AgentsCacheChanged event, Emitter<AgentsState> emit) {
+    if (event.snapshot.agents.isNotEmpty) {
+      _lastCachedAgents = event.snapshot.agents;
+    }
+
     if (event.snapshot.agents.isEmpty && state.status == AgentsStatus.loading) {
       return;
     }
