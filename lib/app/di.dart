@@ -11,6 +11,8 @@ import 'package:cursor/features/launch/data/catalog_remote_source.dart';
 import 'package:cursor/features/launch/data/launch_draft_store.dart';
 import 'package:cursor/features/launch/data/launch_repository.dart';
 import 'package:cursor/features/launch/presentation/launch_bloc.dart';
+import 'package:cursor/features/thread/data/thread_repository.dart';
+import 'package:cursor/features/thread/presentation/thread_bloc.dart';
 import 'package:dio/dio.dart';
 
 class AppDependencies {
@@ -50,6 +52,10 @@ class AppDependencies {
     apiClient: cursorApiClient,
     database: database,
   );
+  late final ThreadRepository threadRepository = ThreadRepository(
+    apiClient: cursorApiClient,
+    database: database,
+  );
   late final CatalogRemoteSource catalogRemoteSource = CatalogRemoteSource(
     cursorApiClient,
   );
@@ -83,6 +89,10 @@ class AppDependencies {
       repository: launchRepository,
       draftStore: launchDraftStore,
     );
+  }
+
+  ThreadBloc createThreadBloc(String agentId) {
+    return ThreadBloc(repository: threadRepository, agentId: agentId);
   }
 }
 

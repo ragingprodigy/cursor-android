@@ -95,6 +95,12 @@ class ThreadSnapshotsDao extends DatabaseAccessor<AppDatabase>
     )..where((snapshot) => snapshot.agentId.equals(agentId))).getSingleOrNull();
   }
 
+  Stream<ThreadSnapshotRow?> watchByAgentId(String agentId) {
+    return (select(threadSnapshots)
+          ..where((snapshot) => snapshot.agentId.equals(agentId)))
+        .watchSingleOrNull();
+  }
+
   Future<void> upsert(ThreadSnapshotsCompanion row) {
     return into(threadSnapshots).insertOnConflictUpdate(row);
   }
