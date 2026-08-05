@@ -31,7 +31,12 @@ GoRouter createAppRouter(AppDependencies dependencies) {
       ),
       GoRoute(
         path: '/agents',
-        builder: (context, state) => const AgentsPage(),
+        builder: (context, state) {
+          return BlocProvider(
+            create: (_) => dependencies.createAgentsBloc(),
+            child: const AgentsPage(),
+          );
+        },
         routes: [
           GoRoute(
             path: 'new',

@@ -59,6 +59,14 @@ class AgentsDao extends DatabaseAccessor<AppDatabase> with _$AgentsDaoMixin {
         .get();
   }
 
+  Stream<List<AgentCacheRow>> watchAll() {
+    return (select(agents)..orderBy([
+          (agent) => OrderingTerm.desc(agent.updatedAt),
+          (agent) => OrderingTerm.desc(agent.cachedAt),
+        ]))
+        .watch();
+  }
+
   Future<AgentCacheRow?> getById(String id) {
     return (select(
       agents,

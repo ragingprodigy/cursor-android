@@ -2,6 +2,8 @@ import 'package:cursor/core/config/app_config.dart';
 import 'package:cursor/core/db/app_database.dart';
 import 'package:cursor/core/network/cursor_api_client.dart';
 import 'package:cursor/core/storage/secure_credentials_store.dart';
+import 'package:cursor/features/agents/data/agents_repository.dart';
+import 'package:cursor/features/agents/presentation/agents_bloc.dart';
 import 'package:cursor/features/auth/data/auth_remote_source.dart';
 import 'package:cursor/features/auth/data/auth_session_repository.dart';
 import 'package:cursor/features/auth/presentation/connect_bloc.dart';
@@ -40,6 +42,10 @@ class AppDependencies {
   late final AuthRemoteSource authRemoteSource = AuthRemoteSource(
     cursorApiClient,
   );
+  late final AgentsRepository agentsRepository = AgentsRepository(
+    apiClient: cursorApiClient,
+    database: database,
+  );
   late final AuthSessionRepository authSession =
       _authSessionOverride ??
       AuthSessionRepository(
@@ -53,6 +59,10 @@ class AppDependencies {
 
   ConnectBloc createConnectBloc() {
     return ConnectBloc(authSession);
+  }
+
+  AgentsBloc createAgentsBloc() {
+    return AgentsBloc(agentsRepository);
   }
 }
 
