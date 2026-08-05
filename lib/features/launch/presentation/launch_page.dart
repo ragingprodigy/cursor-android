@@ -196,7 +196,7 @@ class _LaunchForm extends HookWidget {
         ),
         const SizedBox(height: 18),
         DropdownButtonFormField<String>(
-          value: _selectedModelId(state),
+          initialValue: _selectedModelId(state),
           decoration: const InputDecoration(
             labelText: 'Model',
             border: OutlineInputBorder(),

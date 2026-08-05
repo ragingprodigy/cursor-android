@@ -234,9 +234,10 @@ class LaunchBloc extends Bloc<LaunchEvent, LaunchState> {
   LaunchBloc({
     required LaunchRepository repository,
     required LaunchDraftStore draftStore,
-  }) : _repository = repository,
-       _draftStore = draftStore,
-       super(const LaunchState.ready()) {
+  }) : this._(repository, draftStore);
+
+  LaunchBloc._(this._repository, this._draftStore)
+    : super(const LaunchState.ready()) {
     on<LaunchStarted>(_onStarted);
     on<LaunchPromptChanged>(_onPromptChanged);
     on<LaunchRepositoryChanged>(_onRepositoryChanged);

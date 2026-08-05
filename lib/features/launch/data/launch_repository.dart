@@ -24,7 +24,9 @@ class LaunchRequest extends Equatable {
 
 class LaunchRepository {
   LaunchRepository({required CatalogRemoteSource catalogRemoteSource})
-    : _catalogRemoteSource = catalogRemoteSource;
+    : this._(catalogRemoteSource);
+
+  LaunchRepository._(this._catalogRemoteSource);
 
   final CatalogRemoteSource _catalogRemoteSource;
 
