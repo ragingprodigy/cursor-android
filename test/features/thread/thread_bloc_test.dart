@@ -62,6 +62,13 @@ void main() {
     when(() => draftStore.load(any())).thenAnswer((_) async => '');
     when(() => draftStore.save(any(), any())).thenAnswer((_) async {});
     when(() => draftStore.clear(any())).thenAnswer((_) async {});
+    when(
+      () => repository.streamRun(
+        any(),
+        any(),
+        lastEventId: any(named: 'lastEventId'),
+      ),
+    ).thenAnswer((_) => const Stream<SseEvent>.empty());
   });
 
   tearDown(() async {
@@ -284,6 +291,49 @@ void main() {
     );
 
     blocTest<ThreadBloc, ThreadState>(
+      'continues after successful follow-up when draft clear fails',
+      seed: () => ThreadState.ready(
+        'bc-1',
+        agent: agent,
+        messages: const [],
+        followUpDraft: 'Keep going',
+      ),
+      build: () {
+        final createdRun = AgentRun(
+          id: 'run-2',
+          status: 'CREATING',
+          createdAt: DateTime.utc(2026, 8, 5, 13),
+        );
+        when(
+          () => repository.sendFollowUp('bc-1', 'Keep going'),
+        ).thenAnswer((_) async => createdRun);
+        when(
+          () => draftStore.clear('bc-1'),
+        ).thenThrow(StateError('local draft store unavailable'));
+        when(() => repository.load('bc-1')).thenAnswer((_) async {
+          return ThreadSnapshot.fresh(agent: agent, runs: [createdRun]);
+        });
+        return buildBloc();
+      },
+      act: (bloc) => bloc.add(const ThreadFollowUpSubmitted('Keep going')),
+      wait: const Duration(milliseconds: 20),
+      verify: (bloc) {
+        verify(() => repository.sendFollowUp('bc-1', 'Keep going')).called(1);
+        verify(() => draftStore.clear('bc-1')).called(1);
+        verify(
+          () => repository.streamRun('bc-1', 'run-2', lastEventId: null),
+        ).called(1);
+        verify(() => repository.load('bc-1')).called(1);
+        expect(bloc.state.status, ThreadStatus.ready);
+        expect(bloc.state.actionMessage, isNull);
+        expect(bloc.state.followUpDraft, '');
+        expect(bloc.state.isSendingFollowUp, isFalse);
+        expect(bloc.state.latestRunId, 'run-2');
+        expect(bloc.state.isLatestRunActive, isTrue);
+      },
+    );
+
+    blocTest<ThreadBloc, ThreadState>(
       'keeps the draft and surfaces an error on failure',
       seed: () => ThreadState.ready(
         'bc-1',
@@ -430,6 +480,12 @@ void main() {
       status: 'RUNNING',
       createdAt: DateTime.utc(2026, 8, 5, 12),
     );
+    final completedRun = AgentRun(
+      id: 'run-active',
+      status: 'completed',
+      resultText: 'Finished from cache',
+      createdAt: DateTime.utc(2026, 8, 5, 12),
+    );
 
     setUp(() {
       sseController = StreamController<SseEvent>.broadcast();
@@ -506,6 +562,46 @@ void main() {
         expect(
           bloc.state.messages.whereType<AssistantMessage>().last.text,
           'All done',
+        );
+      },
+    );
+
+    blocTest<ThreadBloc, ThreadState>(
+      'clears live overlays when cache marks the latest run inactive',
+      build: () {
+        when(() => repository.load('bc-1')).thenAnswer((_) async {
+          return ThreadSnapshot.fresh(agent: agent, runs: [activeRun]);
+        });
+        return buildBloc();
+      },
+      act: (bloc) async {
+        bloc.add(const ThreadStarted());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        sseController.add(const SseEvent(event: 'assistant', data: 'Partial'));
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(
+          const SseEvent(
+            event: 'tool_call',
+            data: '{"name":"flutter test","status":"running"}',
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(bloc.state.liveAssistantText, 'Partial');
+        expect(bloc.state.liveToolSteps, hasLength(1));
+
+        cacheController.add(
+          ThreadSnapshot.cached(agent: agent, runs: [completedRun]),
+        );
+        await Future<void>.delayed(Duration.zero);
+      },
+      verify: (bloc) {
+        expect(bloc.state.status, ThreadStatus.ready);
+        expect(bloc.state.isLatestRunActive, isFalse);
+        expect(bloc.state.liveAssistantText, isNull);
+        expect(bloc.state.liveToolSteps, isEmpty);
+        expect(
+          bloc.state.displayMessages.whereType<AssistantMessage>().last.text,
+          'Finished from cache',
         );
       },
     );

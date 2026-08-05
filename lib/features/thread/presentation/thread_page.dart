@@ -438,7 +438,6 @@ class _Composer extends HookWidget {
             Expanded(
               child: TextField(
                 controller: controller,
-                enabled: canSubmit,
                 minLines: 1,
                 maxLines: 5,
                 textInputAction: TextInputAction.send,

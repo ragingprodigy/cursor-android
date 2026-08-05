@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'package:cursor/core/error/app_exception.dart';
 import 'package:cursor/core/network/sse_client.dart';
@@ -464,20 +465,9 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
 
     emit(_withActionMessage(null, state.copyWith(isSendingFollowUp: true)));
 
+    late final AgentRun run;
     try {
-      final run = await _repository.sendFollowUp(_agentId, text);
-      _followUpDraft = '';
-      await _draftStore.clear(_agentId);
-      emit(
-        state.copyWith(
-          isSendingFollowUp: false,
-          followUpDraft: '',
-          latestRunId: run.id,
-          isLatestRunActive: run.isActive,
-        ),
-      );
-      _syncStreamForLatestRun(run);
-      add(const ThreadRefreshed());
+      run = await _repository.sendFollowUp(_agentId, text);
     } on AppException catch (error) {
       emit(
         _withActionMessage(
@@ -485,6 +475,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           state.copyWith(isSendingFollowUp: false),
         ),
       );
+      return;
     } catch (_) {
       emit(
         _withActionMessage(
@@ -492,7 +483,31 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           state.copyWith(isSendingFollowUp: false),
         ),
       );
+      return;
     }
+
+    _followUpDraft = '';
+    try {
+      await _draftStore.clear(_agentId);
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to clear follow-up draft after send.',
+        name: 'ThreadBloc',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    emit(
+      state.copyWith(
+        isSendingFollowUp: false,
+        followUpDraft: '',
+        latestRunId: run.id,
+        isLatestRunActive: run.isActive,
+      ),
+    );
+    _syncStreamForLatestRun(run);
+    add(const ThreadRefreshed());
   }
 
   Future<void> _onCancelRequested(
@@ -557,6 +572,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
 
     final latestRunId = event.snapshot.latestRun?.id;
     final isLatestRunActive = event.snapshot.latestRun?.isActive ?? false;
+    final keepLiveOverlay =
+        isLatestRunActive &&
+        latestRunId == state.latestRunId &&
+        _streamingRunId == latestRunId;
 
     if (state.status == ThreadStatus.ready) {
       emit(
@@ -568,8 +587,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           isLatestRunActive: isLatestRunActive,
           followUpDraft: _followUpDraft,
           actionMessage: _actionMessage,
-          liveAssistantText: state.liveAssistantText,
-          liveToolSteps: state.liveToolSteps,
+          liveAssistantText: keepLiveOverlay ? state.liveAssistantText : null,
+          liveToolSteps: keepLiveOverlay ? state.liveToolSteps : const [],
         ),
       );
       return;
@@ -610,6 +629,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       case 'result':
       case 'done':
         _stopStreaming();
+        emit(_clearLiveOverlay(state));
         add(const ThreadRefreshed());
       default:
         break;
@@ -643,6 +663,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       final run = await _repository.loadRun(_agentId, event.runId);
       if (!run.isActive) {
         _stopStreaming();
+        emit(_clearLiveOverlay(state));
         add(const ThreadRefreshed());
       }
     } catch (_) {
@@ -714,6 +735,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _lastEventId = null;
     _liveAssistantBuffer.clear();
     _liveToolStepsById.clear();
+  }
+
+  ThreadState _clearLiveOverlay(ThreadState base) {
+    return base.copyWith(liveAssistantText: null, liveToolSteps: const []);
   }
 
   String _extractDeltaText(String data) {
