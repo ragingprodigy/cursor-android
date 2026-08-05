@@ -3,7 +3,6 @@ import 'package:cursor/core/network/cursor_api_client.dart';
 import 'package:cursor/features/thread/data/thread_repository.dart';
 import 'package:cursor/features/thread/domain/thread_message.dart';
 import 'package:dio/dio.dart';
-import 'package:drift/drift.dart' show Value;
 import 'package:flutter_test/flutter_test.dart';
 
 class _Adapter implements HttpClientAdapter {

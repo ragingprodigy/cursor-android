@@ -118,10 +118,15 @@ class ThreadState extends Equatable {
 }
 
 class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
-  ThreadBloc({required ThreadRepository repository, required String agentId})
-    : _repository = repository,
-      _agentId = agentId,
-      super(ThreadState.loading(agentId)) {
+  factory ThreadBloc({
+    required ThreadRepository repository,
+    required String agentId,
+  }) {
+    return ThreadBloc._(repository, agentId);
+  }
+
+  ThreadBloc._(this._repository, this._agentId)
+    : super(ThreadState.loading(_agentId)) {
     on<ThreadStarted>(_onStarted);
     on<ThreadRefreshed>(_onRefreshed);
     on<_ThreadCacheChanged>(_onCacheChanged);
