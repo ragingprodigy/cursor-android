@@ -4,8 +4,9 @@ import 'package:cursor/core/network/cursor_api_client.dart';
 import 'package:cursor/core/storage/secure_credentials_store.dart';
 import 'package:cursor/features/auth/data/auth_remote_source.dart';
 import 'package:cursor/features/auth/domain/api_key_info.dart';
+import 'package:flutter/foundation.dart';
 
-class AuthSessionRepository {
+class AuthSessionRepository extends ChangeNotifier {
   AuthSessionRepository({
     required CursorApiClient apiClient,
     required AuthRemoteSource remoteSource,
@@ -29,6 +30,8 @@ class AuthSessionRepository {
 
   ApiKeyInfo? get currentInfo => _currentInfo;
 
+  bool get isAuthenticated => _currentInfo != null;
+
   Future<ApiKeyInfo?> restore() async {
     final storedKey = _normalize(await _credentials.readApiKey());
     final bootstrapKey = _normalize(_config.bootstrapApiKey);
@@ -42,8 +45,9 @@ class AuthSessionRepository {
     _apiClient.setApiKey(apiKey);
 
     try {
-      _currentInfo = await _remoteSource.me();
-      return _currentInfo;
+      final info = await _remoteSource.me();
+      _setCurrentInfo(info);
+      return info;
     } on UnauthorizedException {
       await _credentials.clear();
       _clearClientSession();
@@ -62,7 +66,7 @@ class AuthSessionRepository {
     try {
       final info = await _remoteSource.me();
       await _credentials.saveApiKey(trimmed);
-      _currentInfo = info;
+      _setCurrentInfo(info);
       return info;
     } on UnauthorizedException {
       _clearClientSession();
@@ -82,6 +86,15 @@ class AuthSessionRepository {
 
   void _clearClientSession() {
     _apiClient.setApiKey(null);
-    _currentInfo = null;
+    _setCurrentInfo(null);
+  }
+
+  void _setCurrentInfo(ApiKeyInfo? info) {
+    if (_currentInfo == info) {
+      return;
+    }
+
+    _currentInfo = info;
+    notifyListeners();
   }
 }

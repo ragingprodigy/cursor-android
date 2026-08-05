@@ -7,12 +7,13 @@ import 'package:cursor/features/auth/data/auth_session_repository.dart';
 import 'package:cursor/features/auth/presentation/connect_bloc.dart';
 import 'package:dio/dio.dart';
 
-class AppDi {
-  AppDi({
+class AppDependencies {
+  AppDependencies({
     AppConfig? config,
     Dio? dio,
     SecureCredentialsStore? credentialsStore,
     AppDatabase? database,
+    AuthSessionRepository? authSession,
   }) : config = config ?? AppConfig.fromEnvironment(),
        dio =
            dio ??
@@ -22,18 +23,25 @@ class AppDi {
              ),
            ),
        credentialsStore = credentialsStore ?? SecureCredentialsStore(),
-       database = database ?? AppDatabase.defaults();
+       database = database ?? AppDatabase.defaults(),
+       _authSessionOverride = authSession;
+
+  static Future<AppDependencies> create(AppConfig config) async {
+    return AppDependencies(config: config);
+  }
 
   final AppConfig config;
   final Dio dio;
   final SecureCredentialsStore credentialsStore;
   final AppDatabase database;
+  final AuthSessionRepository? _authSessionOverride;
 
   late final CursorApiClient cursorApiClient = CursorApiClient(dio);
   late final AuthRemoteSource authRemoteSource = AuthRemoteSource(
     cursorApiClient,
   );
-  late final AuthSessionRepository authSessionRepository =
+  late final AuthSessionRepository authSession =
+      _authSessionOverride ??
       AuthSessionRepository(
         apiClient: cursorApiClient,
         remoteSource: authRemoteSource,
@@ -41,7 +49,11 @@ class AppDi {
         config: config,
       );
 
+  AuthSessionRepository get authSessionRepository => authSession;
+
   ConnectBloc createConnectBloc() {
-    return ConnectBloc(authSessionRepository);
+    return ConnectBloc(authSession);
   }
 }
+
+typedef AppDi = AppDependencies;

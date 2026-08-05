@@ -1,13 +1,31 @@
+import 'package:cursor/app/di.dart';
+import 'package:cursor/app/router.dart';
+import 'package:cursor/app/theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_hooks/flutter_hooks.dart';
 
-class CursorApp extends StatelessWidget {
-  const CursorApp({super.key});
+class CursorApp extends HookWidget {
+  const CursorApp({required this.dependencies, super.key});
+
+  final AppDependencies dependencies;
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
+    final router = useMemoized(() => createAppRouter(dependencies), [
+      dependencies,
+    ]);
+
+    useEffect(() {
+      return router.dispose;
+    }, [router]);
+
+    return MaterialApp.router(
       title: 'Cursor',
-      home: Scaffold(body: Center(child: Text('Cursor'))),
+      theme: CursorTheme.dark(),
+      darkTheme: CursorTheme.dark(),
+      themeMode: ThemeMode.dark,
+      routerConfig: router,
+      debugShowCheckedModeBanner: false,
     );
   }
 }
