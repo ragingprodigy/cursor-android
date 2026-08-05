@@ -23,6 +23,10 @@ class AgentRun extends Equatable {
   final DateTime? updatedAt;
   final Map<String, Object?> payload;
 
+  static const activeStatuses = {'CREATING', 'RUNNING'};
+
+  bool get isActive => activeStatuses.contains(status.toUpperCase());
+
   Map<String, Object?> toJson() {
     return {
       'id': id,

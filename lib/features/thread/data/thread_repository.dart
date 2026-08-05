@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:cursor/core/db/app_database.dart';
 import 'package:cursor/core/error/app_exception.dart';
 import 'package:cursor/core/network/cursor_api_client.dart';
+import 'package:cursor/core/network/sse_client.dart';
 import 'package:cursor/features/thread/data/thread_message_mapper.dart';
 import 'package:cursor/features/thread/domain/agent_detail.dart';
 import 'package:cursor/features/thread/domain/agent_run.dart';
@@ -74,6 +75,8 @@ class ThreadSnapshot extends Equatable {
   final bool isStale;
   final DateTime? cachedAt;
 
+  AgentRun? get latestRun => latestAgentRun(runs);
+
   @override
   List<Object?> get props {
     return [agent, runs, messages, isOffline, isStale, cachedAt];
@@ -84,12 +87,14 @@ class ThreadRepository {
   ThreadRepository({
     required CursorApiClient apiClient,
     required AppDatabase database,
-  }) : this._(apiClient, database);
+    required SseClient sseClient,
+  }) : this._(apiClient, database, sseClient);
 
-  ThreadRepository._(this._apiClient, this._database);
+  ThreadRepository._(this._apiClient, this._database, this._sseClient);
 
   final CursorApiClient _apiClient;
   final AppDatabase _database;
+  final SseClient _sseClient;
 
   Stream<ThreadSnapshot> watchCache(String agentId) {
     return _database.threadSnapshotsDao.watchByAgentId(agentId).map((row) {
@@ -129,6 +134,60 @@ class ThreadRepository {
     } on NetworkException {
       return _readStaleCache(agentId, isOffline: true);
     }
+  }
+
+  /// Streams SSE events for [runId], resuming from [lastEventId] when set.
+  ///
+  /// Throws [ApiException] with `statusCode == 410` when the stream has
+  /// expired; callers should fall back to polling [loadRun].
+  Stream<SseEvent> streamRun(
+    String agentId,
+    String runId, {
+    String? lastEventId,
+  }) {
+    final encodedAgentId = Uri.encodeComponent(agentId);
+    final encodedRunId = Uri.encodeComponent(runId);
+    return _sseClient.stream(
+      '/v1/agents/$encodedAgentId/runs/$encodedRunId/stream',
+      lastEventId: lastEventId,
+    );
+  }
+
+  Future<AgentRun> loadRun(String agentId, String runId) async {
+    final encodedAgentId = Uri.encodeComponent(agentId);
+    final encodedRunId = Uri.encodeComponent(runId);
+    final response = await _apiClient.get<Map<String, dynamic>>(
+      '/v1/agents/$encodedAgentId/runs/$encodedRunId',
+    );
+    return _runFromResponse(response.data, agentId: agentId);
+  }
+
+  Future<AgentRun> sendFollowUp(String agentId, String text) async {
+    final encodedAgentId = Uri.encodeComponent(agentId);
+    final response = await _apiClient.post<Map<String, dynamic>>(
+      '/v1/agents/$encodedAgentId/runs',
+      data: {
+        'prompt': {'text': text},
+      },
+    );
+    return _runFromResponse(response.data, agentId: agentId);
+  }
+
+  Future<void> cancelRun(String agentId, String runId) async {
+    final encodedAgentId = Uri.encodeComponent(agentId);
+    final encodedRunId = Uri.encodeComponent(runId);
+    await _apiClient.post<Map<String, dynamic>>(
+      '/v1/agents/$encodedAgentId/runs/$encodedRunId/cancel',
+    );
+  }
+
+  AgentRun _runFromResponse(Object? data, {required String agentId}) {
+    final payload = _asMap(data, 'Cursor run response');
+    final runJson = payload['run'];
+    if (runJson is Map) {
+      return _runFromJson(_stringKeyedMap(runJson), agentId: agentId);
+    }
+    return _runFromJson(payload, agentId: agentId);
   }
 
   Future<ThreadSnapshot> _readStaleCache(

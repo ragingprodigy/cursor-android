@@ -1,5 +1,7 @@
 import 'package:cursor/core/db/app_database.dart';
+import 'package:cursor/core/error/app_exception.dart';
 import 'package:cursor/core/network/cursor_api_client.dart';
+import 'package:cursor/core/network/sse_client.dart';
 import 'package:cursor/features/thread/data/thread_repository.dart';
 import 'package:cursor/features/thread/domain/thread_message.dart';
 import 'package:dio/dio.dart';
@@ -91,6 +93,7 @@ void main() {
       final repository = ThreadRepository(
         apiClient: CursorApiClient(dio),
         database: database,
+        sseClient: SseClient(dio),
       );
 
       final snapshot = await repository.load('bc-1');
@@ -146,6 +149,7 @@ void main() {
       final repository = ThreadRepository(
         apiClient: CursorApiClient(dio),
         database: database,
+        sseClient: SseClient(dio),
       );
 
       final snapshot = await repository.load('bc-cached');
@@ -158,9 +162,11 @@ void main() {
   );
 
   test('watchCache emits snapshot updates for an agent', () async {
+    final dio = Dio();
     final repository = ThreadRepository(
-      apiClient: CursorApiClient(Dio()),
+      apiClient: CursorApiClient(dio),
       database: database,
+      sseClient: SseClient(dio),
     );
     final expectation = expectLater(
       repository.watchCache('bc-watch').map((snapshot) {
@@ -196,5 +202,143 @@ void main() {
     );
 
     await expectation;
+  });
+
+  test('sendFollowUp posts prompt body and returns created run', () async {
+    RequestOptions? seen;
+    Object? seenData;
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      seen = options;
+      seenData = options.data;
+      return ResponseBody.fromString(
+        '''
+        { "run": { "id": "run-3", "status": "CREATING", "createdAt": "2026-08-05T12:00:00.000Z" } }
+        ''',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = ThreadRepository(
+      apiClient: CursorApiClient(dio),
+      database: database,
+      sseClient: SseClient(dio),
+    );
+
+    final run = await repository.sendFollowUp('bc-1', 'Keep going');
+
+    expect(seen!.method, 'POST');
+    expect(seen!.path, '/v1/agents/bc-1/runs');
+    expect(seenData, {
+      'prompt': {'text': 'Keep going'},
+    });
+    expect(run.id, 'run-3');
+    expect(run.status, 'CREATING');
+    expect(run.isActive, isTrue);
+  });
+
+  test('cancelRun posts to the cancel endpoint', () async {
+    RequestOptions? seen;
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      seen = options;
+      return ResponseBody.fromString(
+        '{}',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = ThreadRepository(
+      apiClient: CursorApiClient(dio),
+      database: database,
+      sseClient: SseClient(dio),
+    );
+
+    await repository.cancelRun('bc-1', 'run-1');
+
+    expect(seen!.method, 'POST');
+    expect(seen!.path, '/v1/agents/bc-1/runs/run-1/cancel');
+  });
+
+  test('cancelRun surfaces 409 as ApiException with statusCode', () async {
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      return ResponseBody.fromString(
+        '{"message":"run_not_cancellable"}',
+        409,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = ThreadRepository(
+      apiClient: CursorApiClient(dio),
+      database: database,
+      sseClient: SseClient(dio),
+    );
+
+    expect(
+      () => repository.cancelRun('bc-1', 'run-1'),
+      throwsA(
+        isA<ApiException>().having(
+          (error) => error.statusCode,
+          'statusCode',
+          409,
+        ),
+      ),
+    );
+  });
+
+  test('loadRun fetches a single run by id', () async {
+    RequestOptions? seen;
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      seen = options;
+      return ResponseBody.fromString(
+        '''
+        { "run": { "id": "run-1", "status": "RUNNING", "createdAt": "2026-08-05T12:00:00.000Z" } }
+        ''',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = ThreadRepository(
+      apiClient: CursorApiClient(dio),
+      database: database,
+      sseClient: SseClient(dio),
+    );
+
+    final run = await repository.loadRun('bc-1', 'run-1');
+
+    expect(seen!.path, '/v1/agents/bc-1/runs/run-1');
+    expect(run.status, 'RUNNING');
+  });
+
+  test('streamRun delegates to the SSE client with the run path', () async {
+    RequestOptions? seen;
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      seen = options;
+      return ResponseBody.fromString('event: done\ndata: {}\n\n', 200);
+    });
+    final repository = ThreadRepository(
+      apiClient: CursorApiClient(dio),
+      database: database,
+      sseClient: SseClient(dio),
+    );
+
+    final events = await repository
+        .streamRun('bc-1', 'run-1', lastEventId: '7')
+        .toList();
+
+    expect(seen!.path, '/v1/agents/bc-1/runs/run-1/stream');
+    expect(seen!.headers['Last-Event-ID'], '7');
+    expect(events.single.event, 'done');
   });
 }

@@ -18,9 +18,14 @@ class ThreadPage extends HookWidget {
 
     return BlocBuilder<ThreadBloc, ThreadState>(
       builder: (context, state) {
+        final messages = state.displayMessages;
         return Scaffold(
           appBar: AppBar(
             title: Text(state.agent?.name ?? 'Agent ${state.agentId}'),
+            actions: [
+              if (state.canCancel || state.isCancelling)
+                _CancelButton(state: state),
+            ],
           ),
           body: SafeArea(
             child: Column(
@@ -55,15 +60,22 @@ class ThreadPage extends HookWidget {
                             isError: true,
                           ),
                         ],
+                        if (state.actionMessage != null) ...[
+                          const SizedBox(height: 12),
+                          _StatusBanner(
+                            icon: Icons.info_outline,
+                            message: state.actionMessage!,
+                          ),
+                        ],
                         const SizedBox(height: 16),
                         if (state.isLoading)
                           const _LoadingPanel()
-                        else if (state.messages.isEmpty)
+                        else if (messages.isEmpty)
                           _EmptyThreadPanel(
                             hasFailure: state.status == ThreadStatus.failure,
                           )
                         else
-                          ...state.messages.map((message) {
+                          ...messages.map((message) {
                             return Padding(
                               padding: const EdgeInsets.only(bottom: 12),
                               child: _MessageBubble(message: message),
@@ -73,7 +85,7 @@ class ThreadPage extends HookWidget {
                     ),
                   ),
                 ),
-                const _ComposerStub(),
+                _Composer(state: state),
               ],
             ),
           ),
@@ -86,6 +98,33 @@ class ThreadPage extends HookWidget {
     final completer = Completer<void>();
     context.read<ThreadBloc>().add(ThreadRefreshed(completer: completer));
     return completer.future;
+  }
+}
+
+class _CancelButton extends StatelessWidget {
+  const _CancelButton({required this.state});
+
+  final ThreadState state;
+
+  @override
+  Widget build(BuildContext context) {
+    if (state.isCancelling) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 16),
+        child: SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
+    return IconButton(
+      tooltip: 'Cancel run',
+      icon: const Icon(Icons.stop_circle_outlined),
+      onPressed: () {
+        context.read<ThreadBloc>().add(const ThreadCancelRequested());
+      },
+    );
   }
 }
 
@@ -353,26 +392,88 @@ class _ToolBubble extends StatelessWidget {
   }
 }
 
-class _ComposerStub extends StatelessWidget {
-  const _ComposerStub();
+class _Composer extends HookWidget {
+  const _Composer({required this.state});
+
+  final ThreadState state;
 
   @override
   Widget build(BuildContext context) {
+    final controller = useTextEditingController(text: state.followUpDraft);
+
+    useEffect(() {
+      if (controller.text != state.followUpDraft) {
+        controller.value = TextEditingValue(
+          text: state.followUpDraft,
+          selection: TextSelection.collapsed(
+            offset: state.followUpDraft.length,
+          ),
+        );
+      }
+      return null;
+    }, [state.followUpDraft]);
+
     final theme = Theme.of(context);
+    final canSubmit = state.canSubmitFollowUp;
+    final hint = state.isLatestRunActive
+        ? 'Agent is working - send available once it finishes'
+        : 'Send a follow-up message';
+
+    void submit() {
+      final text = controller.text.trim();
+      if (text.isEmpty || !canSubmit) {
+        return;
+      }
+      context.read<ThreadBloc>().add(ThreadFollowUpSubmitted(text));
+    }
 
     return Material(
       elevation: 8,
       color: theme.colorScheme.surface,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-        child: TextField(
-          enabled: false,
-          decoration: InputDecoration(
-            prefixIcon: const Icon(Icons.lock_outline),
-            hintText: 'Follow-up composer coming in Task 9',
-            filled: true,
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(18)),
-          ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Expanded(
+              child: TextField(
+                controller: controller,
+                enabled: canSubmit,
+                minLines: 1,
+                maxLines: 5,
+                textInputAction: TextInputAction.send,
+                onChanged: (text) {
+                  context.read<ThreadBloc>().add(
+                    ThreadFollowUpDraftChanged(text),
+                  );
+                },
+                onSubmitted: (_) => submit(),
+                decoration: InputDecoration(
+                  prefixIcon: Icon(
+                    state.isLatestRunActive
+                        ? Icons.lock_clock_outlined
+                        : Icons.chat_bubble_outline,
+                  ),
+                  hintText: hint,
+                  filled: true,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            IconButton.filled(
+              onPressed: canSubmit ? submit : null,
+              icon: state.isSendingFollowUp
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.send_outlined),
+            ),
+          ],
         ),
       ),
     );

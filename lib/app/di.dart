@@ -1,6 +1,7 @@
 import 'package:cursor/core/config/app_config.dart';
 import 'package:cursor/core/db/app_database.dart';
 import 'package:cursor/core/network/cursor_api_client.dart';
+import 'package:cursor/core/network/sse_client.dart';
 import 'package:cursor/core/storage/secure_credentials_store.dart';
 import 'package:cursor/features/agents/data/agents_repository.dart';
 import 'package:cursor/features/agents/presentation/agents_bloc.dart';
@@ -11,6 +12,7 @@ import 'package:cursor/features/launch/data/catalog_remote_source.dart';
 import 'package:cursor/features/launch/data/launch_draft_store.dart';
 import 'package:cursor/features/launch/data/launch_repository.dart';
 import 'package:cursor/features/launch/presentation/launch_bloc.dart';
+import 'package:cursor/features/thread/data/follow_up_draft_store.dart';
 import 'package:cursor/features/thread/data/thread_repository.dart';
 import 'package:cursor/features/thread/presentation/thread_bloc.dart';
 import 'package:dio/dio.dart';
@@ -45,6 +47,7 @@ class AppDependencies {
   final AuthSessionRepository? _authSessionOverride;
 
   late final CursorApiClient cursorApiClient = CursorApiClient(dio);
+  late final SseClient sseClient = SseClient(dio);
   late final AuthRemoteSource authRemoteSource = AuthRemoteSource(
     cursorApiClient,
   );
@@ -55,6 +58,10 @@ class AppDependencies {
   late final ThreadRepository threadRepository = ThreadRepository(
     apiClient: cursorApiClient,
     database: database,
+    sseClient: sseClient,
+  );
+  late final FollowUpDraftStore followUpDraftStore = FollowUpDraftStore(
+    database.draftsDao,
   );
   late final CatalogRemoteSource catalogRemoteSource = CatalogRemoteSource(
     cursorApiClient,
@@ -92,7 +99,11 @@ class AppDependencies {
   }
 
   ThreadBloc createThreadBloc(String agentId) {
-    return ThreadBloc(repository: threadRepository, agentId: agentId);
+    return ThreadBloc(
+      repository: threadRepository,
+      draftStore: followUpDraftStore,
+      agentId: agentId,
+    );
   }
 }
 

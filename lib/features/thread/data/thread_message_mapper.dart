@@ -1,16 +1,28 @@
 import 'package:cursor/features/thread/domain/agent_run.dart';
 import 'package:cursor/features/thread/domain/thread_message.dart';
 
-List<ThreadMessage> mapRunsToMessages(Iterable<AgentRun> runs) {
+/// Orders runs the same way the conversation is rendered: ascending by
+/// [AgentRun.createdAt], falling back to original list order on ties.
+List<AgentRun> sortRunsByCreatedAt(Iterable<AgentRun> runs) {
   final indexedRuns = runs.indexed.toList(growable: false)
     ..sort((left, right) {
       final comparison = left.$2.createdAt.compareTo(right.$2.createdAt);
       return comparison == 0 ? left.$1.compareTo(right.$1) : comparison;
     });
+  return indexedRuns.map((indexed) => indexed.$2).toList(growable: false);
+}
+
+/// The most recent run, matching the ordering used by [mapRunsToMessages].
+AgentRun? latestAgentRun(Iterable<AgentRun> runs) {
+  final sorted = sortRunsByCreatedAt(runs);
+  return sorted.isEmpty ? null : sorted.last;
+}
+
+List<ThreadMessage> mapRunsToMessages(Iterable<AgentRun> runs) {
+  final sortedRuns = sortRunsByCreatedAt(runs);
   final messages = <ThreadMessage>[];
 
-  for (final indexedRun in indexedRuns) {
-    final run = indexedRun.$2;
+  for (final run in sortedRuns) {
     final promptText = _blankToNull(run.promptText);
     if (promptText != null) {
       messages.add(
