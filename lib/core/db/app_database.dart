@@ -1,6 +1,10 @@
+import 'dart:ffi';
+import 'dart:io';
+
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:drift_flutter/drift_flutter.dart';
+import 'package:sqlite3/open.dart' as sqlite3_open;
 
 part 'app_database.g.dart';
 
@@ -126,10 +130,37 @@ class DraftsDao extends DatabaseAccessor<AppDatabase> with _$DraftsDaoMixin {
 class AppDatabase extends _$AppDatabase {
   AppDatabase(super.executor);
 
-  AppDatabase.memory() : this(NativeDatabase.memory());
+  AppDatabase.memory() : this(_openMemoryDatabase());
 
-  AppDatabase.defaults() : this(driftDatabase(name: 'cursor'));
+  AppDatabase.defaults() : this(_openDefaultDatabase());
 
   @override
   int get schemaVersion => 1;
+}
+
+bool _linuxSqliteOverrideInstalled = false;
+
+QueryExecutor _openMemoryDatabase() {
+  _installLinuxSqliteFallback();
+  return NativeDatabase.memory();
+}
+
+QueryExecutor _openDefaultDatabase() {
+  _installLinuxSqliteFallback();
+  return driftDatabase(name: 'cursor');
+}
+
+void _installLinuxSqliteFallback() {
+  if (!Platform.isLinux || _linuxSqliteOverrideInstalled) {
+    return;
+  }
+
+  sqlite3_open.open.overrideFor(sqlite3_open.OperatingSystem.linux, () {
+    try {
+      return DynamicLibrary.open('libsqlite3.so');
+    } on ArgumentError {
+      return DynamicLibrary.open('libsqlite3.so.0');
+    }
+  });
+  _linuxSqliteOverrideInstalled = true;
 }
