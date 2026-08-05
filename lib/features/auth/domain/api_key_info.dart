@@ -1,4 +1,6 @@
-class ApiKeyInfo {
+import 'package:equatable/equatable.dart';
+
+class ApiKeyInfo extends Equatable {
   const ApiKeyInfo({
     required this.apiKeyName,
     required this.createdAt,
@@ -28,4 +30,7 @@ class ApiKeyInfo {
       _ => null,
     };
   }
+
+  @override
+  List<Object?> get props => [apiKeyName, userEmail, userId, createdAt];
 }
