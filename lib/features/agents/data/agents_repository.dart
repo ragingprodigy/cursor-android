@@ -35,8 +35,9 @@ class AgentsRepository {
   AgentsRepository({
     required CursorApiClient apiClient,
     required AppDatabase database,
-  }) : _apiClient = apiClient,
-       _database = database;
+  }) : this._(apiClient, database);
+
+  AgentsRepository._(this._apiClient, this._database);
 
   final CursorApiClient _apiClient;
   final AppDatabase _database;
