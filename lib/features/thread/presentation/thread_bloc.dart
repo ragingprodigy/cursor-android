@@ -524,6 +524,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   String? _lastEventId;
   int _reconnectAttempts = 0;
   bool _retriedInvalidLastEventId = false;
+  bool _streamSuspended = false;
   final StringBuffer _liveAssistantBuffer = StringBuffer();
   final StringBuffer _liveThinkingBuffer = StringBuffer();
   final Map<String, ToolStepMessage> _liveToolStepsById = {};
@@ -553,8 +554,9 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
         return;
       }
       _remember(snapshot);
-      _syncStreamForLatestRun(snapshot.latestRun);
-      final latestRun = snapshot.latestRun;
+      final reloaded = await _syncStreamForLatestRun(snapshot.latestRun);
+      final effective = reloaded ?? snapshot;
+      final latestRun = effective.latestRun;
       final latestRunId = latestRun?.id;
       final isLatestRunActive = latestRun?.isActive ?? false;
       final keepLiveOverlay = _shouldKeepLiveOverlay(latestRun);
@@ -564,15 +566,15 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           ? _liveToolSteps()
           : const <ThreadMessage>[];
       final isCancelling = _shouldKeepCancelling(latestRun);
-      if (snapshot.isStale) {
+      if (effective.isStale) {
         emit(
           ThreadState.cached(
             _agentId,
-            agent: snapshot.agent,
-            messages: snapshot.messages,
-            isOffline: snapshot.isOffline,
+            agent: effective.agent,
+            messages: effective.messages,
+            isOffline: effective.isOffline,
             isStale: true,
-            message: snapshot.isOffline
+            message: effective.isOffline
                 ? 'Showing cached thread while offline.'
                 : 'Showing cached thread.',
             latestRunId: latestRunId,
@@ -585,8 +587,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
             liveToolSteps: liveToolSteps,
             models: _models,
             selectedModelId: _selectedModelId,
-            agentUsage: snapshot.usage,
-            usageMessage: snapshot.usageMessage,
+            agentUsage: effective.usage,
+            usageMessage: effective.usageMessage,
           ),
         );
         return;
@@ -594,8 +596,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       emit(
         ThreadState.ready(
           _agentId,
-          agent: snapshot.agent,
-          messages: snapshot.messages,
+          agent: effective.agent,
+          messages: effective.messages,
           latestRunId: latestRunId,
           isLatestRunActive: isLatestRunActive,
           followUpDraft: _followUpDraft,
@@ -606,8 +608,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           liveToolSteps: liveToolSteps,
           models: _models,
           selectedModelId: _selectedModelId,
-          agentUsage: snapshot.usage,
-          usageMessage: snapshot.usageMessage,
+          agentUsage: effective.usage,
+          usageMessage: effective.usageMessage,
         ),
       );
     } on AppException catch (error) {
@@ -735,7 +737,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
         isLatestRunActive: run.isActive,
       ),
     );
-    _syncStreamForLatestRun(run);
+    await _syncStreamForLatestRun(run);
     add(const ThreadRefreshed());
   }
 
@@ -848,7 +850,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     return message.contains('model');
   }
 
-  void _onCacheChanged(_ThreadCacheChanged event, Emitter<ThreadState> emit) {
+  Future<void> _onCacheChanged(
+    _ThreadCacheChanged event,
+    Emitter<ThreadState> emit,
+  ) async {
     if (event.snapshot.agent == null && event.snapshot.messages.isEmpty) {
       if (state.status == ThreadStatus.loading) {
         return;
@@ -856,9 +861,13 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     }
 
     _remember(event.snapshot);
-    _syncStreamForLatestRun(event.snapshot.latestRun);
+    final reloaded = await _syncStreamForLatestRun(event.snapshot.latestRun);
+    final snapshot = reloaded ?? event.snapshot;
+    if (reloaded != null) {
+      _remember(reloaded);
+    }
 
-    final latestRun = event.snapshot.latestRun;
+    final latestRun = snapshot.latestRun;
     final latestRunId = latestRun?.id;
     final isLatestRunActive = latestRun?.isActive ?? false;
     final keepLiveOverlay = _shouldKeepLiveOverlay(latestRun);
@@ -873,8 +882,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       emit(
         ThreadState.ready(
           _agentId,
-          agent: event.snapshot.agent,
-          messages: event.snapshot.messages,
+          agent: snapshot.agent,
+          messages: snapshot.messages,
           latestRunId: latestRunId,
           isLatestRunActive: isLatestRunActive,
           followUpDraft: _followUpDraft,
@@ -885,8 +894,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           liveToolSteps: liveToolSteps,
           models: _models,
           selectedModelId: _selectedModelId,
-          agentUsage: event.snapshot.usage,
-          usageMessage: event.snapshot.usageMessage,
+          agentUsage: snapshot.usage,
+          usageMessage: snapshot.usageMessage,
         ),
       );
       return;
@@ -895,8 +904,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     emit(
       ThreadState.cached(
         _agentId,
-        agent: event.snapshot.agent,
-        messages: event.snapshot.messages,
+        agent: snapshot.agent,
+        messages: snapshot.messages,
         latestRunId: latestRunId,
         isLatestRunActive: isLatestRunActive,
         followUpDraft: _followUpDraft,
@@ -907,8 +916,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
         liveToolSteps: liveToolSteps,
         models: _models,
         selectedModelId: _selectedModelId,
-        agentUsage: event.snapshot.usage,
-        usageMessage: event.snapshot.usageMessage,
+        agentUsage: snapshot.usage,
+        usageMessage: snapshot.usageMessage,
       ),
     );
   }
@@ -917,7 +926,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _ThreadStreamEvent event,
     Emitter<ThreadState> emit,
   ) async {
-    if (event.runId != _streamingRunId) {
+    if (event.runId != _streamingRunId || _streamSuspended) {
       return;
     }
 
@@ -981,7 +990,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _ThreadStreamFailed event,
     Emitter<ThreadState> emit,
   ) async {
-    if (event.runId != _streamingRunId) {
+    if (event.runId != _streamingRunId || _streamSuspended) {
       return;
     }
 
@@ -992,11 +1001,14 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       return;
     }
     if (error is UnauthorizedException) {
-      await _persistLiveThinking(event.runId);
+      await _finalizeStreamingRun(
+        event.runId,
+        refresh: false,
+        clearOverlay: false,
+      );
       if (isClosed) {
         return;
       }
-      _stopStreaming();
       final callback = _onUnauthorized;
       if (callback != null) {
         await callback();
@@ -1045,11 +1057,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     }
 
     if (_reconnectAttempts >= _maxReconnectAttempts) {
-      await _persistLiveThinking(event.runId);
+      await _finalizeStreamingRun(event.runId, refresh: false);
       if (isClosed) {
         return;
       }
-      _stopStreaming();
       emit(
         _withActionMessage(
           'Stream disconnected. Pull to refresh for the latest run status.',
@@ -1080,7 +1091,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _ThreadPollTick event,
     Emitter<ThreadState> emit,
   ) async {
-    if (event.runId != _streamingRunId) {
+    if (event.runId != _streamingRunId || _streamSuspended) {
       return;
     }
     try {
@@ -1102,43 +1113,52 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     }
   }
 
-  void _syncStreamForLatestRun(AgentRun? latestRun) {
+  /// Sync stream ownership with the latest run.
+  ///
+  /// Returns a reloaded [ThreadSnapshot] when inactive-stream thinking was
+  /// persisted and callers should emit the refreshed message list.
+  Future<ThreadSnapshot?> _syncStreamForLatestRun(AgentRun? latestRun) async {
     final isActive = latestRun?.isActive ?? false;
     if (!isActive) {
       final runId = _streamingRunId;
-      final thinkingText = _blankToNull(_liveThinkingBuffer.toString());
-      _stopStreaming();
-      if (runId != null && thinkingText != null) {
-        unawaited(
-          _repository.saveRunThinking(
-            agentId: _agentId,
-            runId: runId,
-            text: thinkingText,
-          ),
-        );
+      if (runId == null) {
+        return null;
       }
-      return;
+      final hadThinking = _blankToNull(_liveThinkingBuffer.toString()) != null;
+      await _finalizeStreamingRun(runId, refresh: false);
+      if (!hadThinking || isClosed) {
+        return null;
+      }
+      try {
+        return await _repository.load(_agentId);
+      } catch (error, stackTrace) {
+        developer.log(
+          'Unable to reload thread after persisting thinking.',
+          name: 'ThreadBloc',
+          error: error,
+          stackTrace: stackTrace,
+        );
+        return null;
+      }
     }
     if (_streamingRunId == latestRun!.id) {
-      return;
+      return null;
     }
-    _startStreaming(latestRun.id);
+    await _startStreaming(latestRun.id);
+    return null;
   }
 
-  void _startStreaming(String runId) {
+  Future<void> _startStreaming(String runId) async {
     final previousRunId = _streamingRunId;
-    final previousThinking = _blankToNull(_liveThinkingBuffer.toString());
-    _stopStreaming();
-    if (previousRunId != null &&
-        previousThinking != null &&
-        previousRunId != runId) {
-      unawaited(
-        _repository.saveRunThinking(
-          agentId: _agentId,
-          runId: previousRunId,
-          text: previousThinking,
-        ),
-      );
+    if (previousRunId != null && previousRunId != runId) {
+      await _finalizeStreamingRun(previousRunId, refresh: false);
+      if (isClosed) {
+        return;
+      }
+    } else if (previousRunId == runId) {
+      return;
+    } else {
+      _stopStreaming();
     }
     _streamingRunId = runId;
     _reconnectAttempts = 0;
@@ -1208,32 +1228,56 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     Emitter<ThreadState> emit, {
     required String runId,
     bool markInactive = false,
-  }) async {
-    await _persistLiveThinking(runId);
-    if (isClosed) {
-      return;
-    }
-    _stopStreaming();
-    final next = markInactive
-        ? state.copyWith(isLatestRunActive: false)
-        : state;
-    emit(_clearLiveOverlay(next));
-    add(const ThreadRefreshed());
-  }
-
-  Future<void> _persistLiveThinking(String runId) async {
-    final thinkingText = _blankToNull(_liveThinkingBuffer.toString());
-    if (thinkingText == null) {
-      return;
-    }
-    await _repository.saveRunThinking(
-      agentId: _agentId,
-      runId: runId,
-      text: thinkingText,
+  }) {
+    return _finalizeStreamingRun(
+      runId,
+      emit: emit,
+      markInactive: markInactive,
+      refresh: true,
     );
   }
 
-  void _stopStreaming() {
+  /// Detach transports first, await thinking persist, then clear local state.
+  Future<void> _finalizeStreamingRun(
+    String runId, {
+    Emitter<ThreadState>? emit,
+    bool markInactive = false,
+    bool refresh = true,
+    bool clearOverlay = true,
+  }) async {
+    if (_streamingRunId != runId) {
+      return;
+    }
+    _detachStreamTransports();
+    _streamSuspended = true;
+    final thinkingText = _blankToNull(_liveThinkingBuffer.toString());
+    if (thinkingText != null) {
+      await _repository.saveRunThinking(
+        agentId: _agentId,
+        runId: runId,
+        text: thinkingText,
+      );
+    }
+    if (isClosed) {
+      return;
+    }
+    if (_streamingRunId != runId) {
+      _streamSuspended = false;
+      return;
+    }
+    _clearStreamLocalState();
+    if (emit != null && clearOverlay) {
+      final next = markInactive
+          ? state.copyWith(isLatestRunActive: false)
+          : state;
+      emit(_clearLiveOverlay(next));
+    }
+    if (refresh) {
+      add(const ThreadRefreshed());
+    }
+  }
+
+  void _detachStreamTransports() {
     _streamSubscription?.cancel();
     _streamSubscription = null;
     _pollTimer?.cancel();
@@ -1242,13 +1286,22 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _reconnectTimer = null;
     _streamRefreshTimer?.cancel();
     _streamRefreshTimer = null;
+  }
+
+  void _clearStreamLocalState() {
     _streamingRunId = null;
     _lastEventId = null;
     _reconnectAttempts = 0;
     _retriedInvalidLastEventId = false;
+    _streamSuspended = false;
     _liveAssistantBuffer.clear();
     _liveThinkingBuffer.clear();
     _liveToolStepsById.clear();
+  }
+
+  void _stopStreaming() {
+    _detachStreamTransports();
+    _clearStreamLocalState();
   }
 
   Duration _reconnectBackoff(int attempt) {
