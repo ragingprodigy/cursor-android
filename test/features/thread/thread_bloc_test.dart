@@ -35,6 +35,7 @@ void main() {
     name: 'Ship Android app',
     status: 'running',
     url: Uri.parse('https://cursor.com/agents/bc-1'),
+    repoUrl: 'https://github.com/acme/mobile',
     latestRunId: 'run-1',
     createdAt: DateTime.utc(2026, 8, 1),
     updatedAt: DateTime.utc(2026, 8, 2),

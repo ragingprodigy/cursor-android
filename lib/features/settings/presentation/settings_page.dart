@@ -2,6 +2,7 @@ import 'package:cursor/core/db/app_database.dart';
 import 'package:cursor/features/auth/data/auth_session_repository.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:go_router/go_router.dart';
 
 class SettingsPage extends HookWidget {
   const SettingsPage({
@@ -59,7 +60,14 @@ class SettingsPage extends HookWidget {
     }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Back to agents',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => _returnToAgents(context),
+        ),
+        title: const Text('Settings'),
+      ),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(24),
@@ -145,6 +153,14 @@ class SettingsPage extends HookWidget {
       ),
     );
   }
+}
+
+void _returnToAgents(BuildContext context) {
+  if (context.canPop()) {
+    context.pop();
+    return;
+  }
+  context.go('/agents');
 }
 
 class _SettingsValue extends StatelessWidget {

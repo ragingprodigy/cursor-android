@@ -152,7 +152,12 @@ class ThreadRepository {
       final runs = await _enrichTerminalRunResults(agentId, listedRuns);
       await _upsertThreadSnapshot(agentId: agentId, agent: agent, runs: runs);
 
-      final messages = await _messagesFromRuns(agentId, runs);
+      final conversationPrompts = await _loadConversationPrompts(agentId, runs);
+      final messages = await _messagesFromRuns(
+        agentId,
+        runs,
+        conversationPromptByRunId: conversationPrompts,
+      );
       return ThreadSnapshot.fresh(agent: agent, runs: runs, messages: messages);
     } on NetworkException {
       return _readStaleCache(agentId, isOffline: true);
@@ -293,14 +298,96 @@ class ThreadRepository {
 
   Future<List<ThreadMessage>> _messagesFromRuns(
     String agentId,
-    List<AgentRun> runs,
-  ) async {
+    List<AgentRun> runs, {
+    Map<String, String> conversationPromptByRunId = const {},
+  }) async {
     final promptIndex = await _loadRunPromptIndex(agentId);
+    final storedPrompts = {
+      ...promptIndex.byRunId,
+      ...conversationPromptByRunId,
+    };
+    final runsForMessages = conversationPromptByRunId.isEmpty
+        ? runs
+        : [
+            for (final run in runs)
+              if (_blankToNull(conversationPromptByRunId[run.id])
+                  case final text?)
+                run.copyWith(promptText: text)
+              else
+                run,
+          ];
     return mapRunsToMessages(
-      runs,
-      promptTextByRunId: promptIndex.byRunId,
+      runsForMessages,
+      promptTextByRunId: storedPrompts,
       pendingInitialPromptText: promptIndex.pendingInitialPrompt,
     );
+  }
+
+  Future<Map<String, String>> _loadConversationPrompts(
+    String agentId,
+    List<AgentRun> runs,
+  ) async {
+    if (runs.isEmpty) {
+      return const {};
+    }
+
+    try {
+      final encodedAgentId = Uri.encodeComponent(agentId);
+      final response = await _apiClient.get<Map<String, dynamic>>(
+        '/v0/agents/$encodedAgentId/conversation',
+      );
+      final userTexts = _conversationUserTexts(response.data);
+      if (userTexts.isEmpty) {
+        return const {};
+      }
+
+      final sortedRuns = sortRunsByCreatedAt(runs);
+      final count = userTexts.length < sortedRuns.length
+          ? userTexts.length
+          : sortedRuns.length;
+      final prompts = <String, String>{};
+      for (var index = 0; index < count; index += 1) {
+        final runId = sortedRuns[index].id;
+        final text = userTexts[index];
+        prompts[runId] = text;
+        await _saveRunPrompt(agentId: agentId, runId: runId, text: text);
+      }
+      return Map.unmodifiable(prompts);
+    } on AppException catch (error, stackTrace) {
+      developer.log(
+        'Unable to load legacy conversation prompts.',
+        name: 'ThreadRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return const {};
+    }
+  }
+
+  List<String> _conversationUserTexts(Object? data) {
+    final payload = _asMap(data, 'Cursor conversation response');
+    final messages = payload['messages'];
+    if (messages is! List) {
+      throw const ApiException(
+        'Cursor conversation response did not include messages.',
+      );
+    }
+
+    return [
+      for (final message in messages)
+        if (message is Map)
+          if (_conversationMessageText(_stringKeyedMap(message))
+              case final text?)
+            text,
+    ];
+  }
+
+  String? _conversationMessageText(Map<String, Object?> message) {
+    final type = _firstString(message, const ['type', 'role']);
+    if (type != 'user_message') {
+      return null;
+    }
+    return _firstString(message, const ['text', 'content']);
   }
 
   Future<RunPromptIndex> _loadRunPromptIndex(String agentId) async {
@@ -504,6 +591,7 @@ class ThreadRepository {
       name: _firstString(json, const ['name', 'title']) ?? 'Agent $id',
       status: _firstString(json, const ['status', 'state']) ?? 'unknown',
       url: _uriAt(json, 'url'),
+      repoUrl: _repoUrlFromJson(json),
       latestRunId: _firstString(json, const ['latestRunId', 'latest_run_id']),
       createdAt: createdAt,
       updatedAt: _dateAt(json, 'updatedAt', 'updated_at') ?? createdAt,
@@ -653,6 +741,21 @@ class ThreadRepository {
       return null;
     }
     return Uri.tryParse(value);
+  }
+
+  String? _repoUrlFromJson(Map<String, Object?> json) {
+    final direct = _firstString(json, const ['repoUrl', 'repo_url']);
+    if (direct != null) {
+      return direct;
+    }
+    final repos = json['repos'];
+    if (repos is List && repos.isNotEmpty) {
+      final first = repos.first;
+      if (first is Map) {
+        return _firstString(_stringKeyedMap(first), const ['url', 'repoUrl']);
+      }
+    }
+    return null;
   }
 
   DateTime? _dateAt(

@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'package:cursor/core/db/app_database.dart';
 import 'package:cursor/core/error/app_exception.dart';
@@ -54,11 +56,19 @@ class AgentsRepository {
         '/v1/agents',
         queryParameters: const {'limit': 50},
       );
-      final agents = _parseAgentsPayload(response.data);
+      final cachedById = {
+        for (final agent in await _readCached()) agent.id: agent,
+      };
+      final agents = _parseAgentsPayload(response.data)
+          .map(
+            (agent) => _preserveCachedRepository(agent, cachedById[agent.id]),
+          )
+          .toList(growable: false);
       final cachedAt = DateTime.now().toUtc();
       await _database.agentsDao.upsertAll(
         agents.map((agent) => _companionFromSummary(agent, cachedAt)),
       );
+      unawaited(_enrichMissingRepositories(agents));
       return AgentsSnapshot.fresh(await _readCached());
     } on NetworkException {
       return AgentsSnapshot.stale(await _readCached(), isOffline: true);
@@ -118,6 +128,7 @@ class AgentsRepository {
       name: name,
       status: _stringAt(json, 'status') ?? 'unknown',
       url: _uriAt(json, 'url'),
+      repoUrl: _repoUrlFromJson(json),
       latestRunId:
           _stringAt(json, 'latestRunId') ?? _stringAt(json, 'latest_run_id'),
       createdAt: createdAt,
@@ -165,6 +176,97 @@ class AgentsRepository {
     }
   }
 
+  AgentSummary _preserveCachedRepository(
+    AgentSummary agent,
+    AgentSummary? cached,
+  ) {
+    if (_blankToNull(agent.repoUrl) != null ||
+        _blankToNull(cached?.repoUrl) == null) {
+      return agent;
+    }
+    return agent.copyWith(repoUrl: cached!.repoUrl);
+  }
+
+  Future<void> _enrichMissingRepositories(List<AgentSummary> agents) async {
+    final missing = agents
+        .where((agent) => _blankToNull(agent.repoUrl) == null)
+        .toList(growable: false);
+    if (missing.isEmpty) {
+      return;
+    }
+
+    for (var offset = 0; offset < missing.length; offset += 4) {
+      final end = offset + 4 > missing.length ? missing.length : offset + 4;
+      final chunk = missing.sublist(offset, end);
+      await Future.wait(chunk.map(_tryEnrichRepository));
+    }
+  }
+
+  Future<void> _tryEnrichRepository(AgentSummary agent) async {
+    try {
+      final encodedAgentId = Uri.encodeComponent(agent.id);
+      final response = await _apiClient.get<Map<String, dynamic>>(
+        '/v1/agents/$encodedAgentId',
+      );
+      final detail = _summaryFromDetailPayload(response.data, fallback: agent);
+      if (_blankToNull(detail.repoUrl) == null) {
+        return;
+      }
+      await _database.agentsDao.upsertAll([
+        _companionFromSummary(detail, DateTime.now().toUtc()),
+      ]);
+    } on AppException catch (error, stackTrace) {
+      developer.log(
+        'Unable to enrich agent repository.',
+        name: 'AgentsRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to cache enriched agent repository.',
+        name: 'AgentsRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  AgentSummary _summaryFromDetailPayload(
+    Object? data, {
+    required AgentSummary fallback,
+  }) {
+    final payload = _asMap(data);
+    final agent = payload['agent'];
+    if (agent is Map<String, dynamic>) {
+      return _summaryFromJson(
+        agent,
+      ).copyWith(repoUrl: _repoUrlFromJson(agent) ?? fallback.repoUrl);
+    }
+    return _summaryFromJson(
+      payload,
+    ).copyWith(repoUrl: _repoUrlFromJson(payload) ?? fallback.repoUrl);
+  }
+
+  String? _repoUrlFromJson(Map<String, dynamic> json) {
+    final direct = _stringAt(json, 'repoUrl') ?? _stringAt(json, 'repo_url');
+    if (direct != null) {
+      return direct;
+    }
+    final repos = json['repos'];
+    if (repos is List && repos.isNotEmpty) {
+      final first = repos.first;
+      if (first is Map<String, dynamic>) {
+        return _stringAt(first, 'url') ?? _stringAt(first, 'repoUrl');
+      }
+      if (first is Map) {
+        final map = first.map((key, value) => MapEntry(key.toString(), value));
+        return _stringAt(map, 'url') ?? _stringAt(map, 'repoUrl');
+      }
+    }
+    return null;
+  }
+
   AgentsCompanion _companionFromSummary(AgentSummary agent, DateTime cachedAt) {
     return AgentsCompanion.insert(
       id: agent.id,
@@ -179,6 +281,7 @@ class AgentsRepository {
         'name': agent.name,
         'status': agent.status,
         if (agent.url != null) 'url': agent.url.toString(),
+        if (agent.repoUrl != null) 'repoUrl': agent.repoUrl,
         if (agent.latestRunId != null) 'latestRunId': agent.latestRunId,
         'createdAt': agent.createdAt.toUtc().toIso8601String(),
         'updatedAt': agent.updatedAt.toUtc().toIso8601String(),
@@ -188,14 +291,29 @@ class AgentsRepository {
   }
 
   AgentSummary _summaryFromRow(AgentCacheRow row) {
+    final json = _jsonFromCacheRow(row);
     return AgentSummary(
       id: row.id,
       name: row.name,
       status: row.status,
       url: row.url == null ? null : Uri.tryParse(row.url!),
+      repoUrl: _repoUrlFromJson(json),
       latestRunId: row.latestRunId,
       createdAt: row.createdAt.toUtc(),
       updatedAt: row.updatedAt.toUtc(),
     );
   }
+
+  Map<String, dynamic> _jsonFromCacheRow(AgentCacheRow row) {
+    try {
+      return _asMap(row.json);
+    } on AppException {
+      return const {};
+    }
+  }
+}
+
+String? _blankToNull(String? value) {
+  final trimmed = value?.trim();
+  return trimmed == null || trimmed.isEmpty ? null : trimmed;
 }

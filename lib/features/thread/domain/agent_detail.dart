@@ -6,6 +6,7 @@ class AgentDetail extends Equatable {
     required this.name,
     required this.status,
     required this.url,
+    required this.repoUrl,
     required this.latestRunId,
     required this.createdAt,
     required this.updatedAt,
@@ -15,6 +16,7 @@ class AgentDetail extends Equatable {
   final String name;
   final String status;
   final Uri? url;
+  final String? repoUrl;
   final String? latestRunId;
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -25,6 +27,7 @@ class AgentDetail extends Equatable {
       'name': name,
       'status': status,
       if (url != null) 'url': url.toString(),
+      if (repoUrl != null) 'repoUrl': repoUrl,
       if (latestRunId != null) 'latestRunId': latestRunId,
       'createdAt': createdAt.toUtc().toIso8601String(),
       'updatedAt': updatedAt.toUtc().toIso8601String(),
@@ -33,6 +36,6 @@ class AgentDetail extends Equatable {
 
   @override
   List<Object?> get props {
-    return [id, name, status, url, latestRunId, createdAt, updatedAt];
+    return [id, name, status, url, repoUrl, latestRunId, createdAt, updatedAt];
   }
 }

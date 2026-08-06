@@ -51,6 +51,7 @@ void main() {
               "name": "Ship Android app",
               "status": "running",
               "url": "https://cursor.com/agents/bc-1",
+              "repos": [{"url": "https://github.com/acme/mobile"}],
               "latestRunId": "run-1",
               "createdAt": "2026-08-01T10:00:00.000Z",
               "updatedAt": "2026-08-02T11:30:00.000Z"
@@ -77,6 +78,7 @@ void main() {
       expect(result.isStale, isFalse);
       expect(result.agents.single.id, 'bc-1');
       expect(result.agents.single.name, 'Ship Android app');
+      expect(result.agents.single.repoUrl, 'https://github.com/acme/mobile');
       expect(result.agents.single.latestRunId, 'run-1');
       expect(
         result.agents.single.updatedAt,
@@ -87,9 +89,74 @@ void main() {
       expect(rows, hasLength(1));
       expect(rows.single.id, 'bc-1');
       expect(rows.single.status, 'running');
+      expect(
+        rows.single.json,
+        contains('"repoUrl":"https://github.com/acme/mobile"'),
+      );
       expect(rows.single.json, contains('"latestRunId":"run-1"'));
     },
   );
+
+  test('refresh enriches missing repository urls in the cache', () async {
+    final seenPaths = <String>[];
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      seenPaths.add(options.path);
+      if (options.path == '/v1/agents/bc-1') {
+        return ResponseBody.fromString(
+          '''
+          {
+            "agent": {
+              "id": "bc-1",
+              "name": "Ship Android app",
+              "status": "running",
+              "repos": [{"url": "https://github.com/acme/mobile"}],
+              "createdAt": "2026-08-01T10:00:00.000Z",
+              "updatedAt": "2026-08-02T11:30:00.000Z"
+            }
+          }
+          ''',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      }
+      return ResponseBody.fromString(
+        '''
+        {
+          "items": [
+            {
+              "id": "bc-1",
+              "name": "Ship Android app",
+              "status": "running",
+              "createdAt": "2026-08-01T10:00:00.000Z",
+              "updatedAt": "2026-08-02T11:30:00.000Z"
+            }
+          ]
+        }
+        ''',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = AgentsRepository(
+      apiClient: CursorApiClient(dio),
+      database: database,
+    );
+
+    await repository.refresh();
+    await expectLater(
+      repository.watchCached().map((snapshot) {
+        return snapshot.agents.single.repoUrl;
+      }),
+      emits('https://github.com/acme/mobile'),
+    );
+
+    expect(seenPaths, contains('/v1/agents/bc-1'));
+  });
 
   test(
     'network failure returns cached agents marked stale and offline',

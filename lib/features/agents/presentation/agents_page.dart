@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cursor/features/agents/domain/agents_list_grouping.dart';
 import 'package:cursor/features/agents/domain/agent_summary.dart';
 import 'package:cursor/features/agents/presentation/agents_bloc.dart';
 import 'package:flutter/material.dart';
@@ -22,15 +23,52 @@ class AgentsPage extends HookWidget {
       appBar: AppBar(
         title: const Text('Cursor'),
         actions: [
+          BlocBuilder<AgentsBloc, AgentsState>(
+            buildWhen: (previous, current) {
+              return previous.grouping != current.grouping;
+            },
+            builder: (context, state) {
+              return PopupMenuButton<AgentsListGrouping>(
+                tooltip: 'Group agents',
+                icon: const Icon(Icons.view_agenda_outlined),
+                initialValue: state.grouping,
+                onSelected: (grouping) {
+                  context.read<AgentsBloc>().add(
+                    AgentsGroupingChanged(grouping),
+                  );
+                },
+                itemBuilder: (context) {
+                  return [
+                    for (final grouping in AgentsListGrouping.values)
+                      PopupMenuItem(
+                        value: grouping,
+                        child: Row(
+                          children: [
+                            Icon(
+                              state.grouping == grouping
+                                  ? Icons.check
+                                  : Icons.check_box_outline_blank,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 12),
+                            Text(grouping.label),
+                          ],
+                        ),
+                      ),
+                  ];
+                },
+              );
+            },
+          ),
           IconButton(
             tooltip: 'Settings',
-            onPressed: () => context.go('/settings'),
+            onPressed: () => context.push('/settings'),
             icon: const Icon(Icons.settings_outlined),
           ),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => context.go('/agents/new'),
+        onPressed: () => context.push('/agents/new'),
         icon: const Icon(Icons.add),
         label: const Text('New agent'),
       ),
@@ -60,16 +98,8 @@ class AgentsPage extends HookWidget {
                     _EmptyAgentsPanel(
                       hasFailure: state.status == AgentsStatus.failure,
                     )
-                  else ...[
-                    for (final entry in state.agents.indexed)
-                      _StaggeredFadeSlide(
-                        index: entry.$1,
-                        child: Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: _AgentCard(agent: entry.$2),
-                        ),
-                      ),
-                  ],
+                  else
+                    _AgentsList(agents: state.agents, grouping: state.grouping),
                 ],
               ),
             );
@@ -277,12 +307,71 @@ class _EmptyAgentsPanel extends StatelessWidget {
             if (!hasFailure) ...[
               const SizedBox(height: 18),
               FilledButton.icon(
-                onPressed: () => context.go('/agents/new'),
+                onPressed: () => context.push('/agents/new'),
                 icon: const Icon(Icons.add),
                 label: const Text('New agent'),
               ),
             ],
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentsList extends StatelessWidget {
+  const _AgentsList({required this.agents, required this.grouping});
+
+  final List<AgentSummary> agents;
+  final AgentsListGrouping grouping;
+
+  @override
+  Widget build(BuildContext context) {
+    final sections = groupAgents(agents, grouping);
+    final children = <Widget>[];
+    var cardIndex = 0;
+
+    for (final section in sections) {
+      if (grouping != AgentsListGrouping.flat) {
+        children.add(_SectionHeader(title: section.title));
+      }
+      for (final agent in section.agents) {
+        children.add(
+          _StaggeredFadeSlide(
+            index: cardIndex,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _AgentCard(agent: agent),
+            ),
+          ),
+        );
+        cardIndex += 1;
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: children,
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 10, 4, 10),
+      child: Text(
+        title,
+        style: theme.textTheme.titleMedium?.copyWith(
+          color: theme.colorScheme.secondary,
+          fontWeight: FontWeight.w800,
         ),
       ),
     );
@@ -304,7 +393,7 @@ class _AgentCard extends StatelessWidget {
           horizontal: 18,
           vertical: 10,
         ),
-        onTap: () => context.go('/agents/${Uri.encodeComponent(agent.id)}'),
+        onTap: () => context.push('/agents/${Uri.encodeComponent(agent.id)}'),
         title: Text(agent.name, style: theme.textTheme.titleLarge),
         subtitle: Padding(
           padding: const EdgeInsets.only(top: 6),

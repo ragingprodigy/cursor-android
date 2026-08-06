@@ -3,6 +3,7 @@ import 'package:cursor/core/db/app_database.dart';
 import 'package:cursor/core/network/cursor_api_client.dart';
 import 'package:cursor/core/network/sse_client.dart';
 import 'package:cursor/core/storage/secure_credentials_store.dart';
+import 'package:cursor/features/agents/data/agents_list_grouping_store.dart';
 import 'package:cursor/features/agents/data/agents_repository.dart';
 import 'package:cursor/features/agents/presentation/agents_bloc.dart';
 import 'package:cursor/features/auth/data/auth_remote_source.dart';
@@ -57,6 +58,8 @@ class AppDependencies {
     apiClient: cursorApiClient,
     database: database,
   );
+  late final AgentsListGroupingStore agentsListGroupingStore =
+      AgentsListGroupingStore();
   late final ThreadRepository threadRepository = ThreadRepository(
     apiClient: cursorApiClient,
     database: database,
@@ -101,7 +104,7 @@ class AppDependencies {
   }
 
   AgentsBloc createAgentsBloc() {
-    return AgentsBloc(agentsRepository);
+    return AgentsBloc(agentsRepository, groupingStore: agentsListGroupingStore);
   }
 
   LaunchBloc createLaunchBloc() {

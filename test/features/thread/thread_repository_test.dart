@@ -123,6 +123,7 @@ void main() {
         '/v1/agents/bc-1',
         '/v1/agents/bc-1/runs',
         '/v1/agents/bc-1/runs/run-1',
+        '/v0/agents/bc-1/conversation',
       ]);
       expect(snapshot.agent!.name, 'Ship Android app');
       expect(snapshot.messages, hasLength(3));
@@ -194,6 +195,7 @@ void main() {
         '/v1/agents/bc-1',
         '/v1/agents/bc-1/runs',
         '/v1/agents/bc-1/runs/run-1',
+        '/v0/agents/bc-1/conversation',
       ]);
       expect(snapshot.runs.map((run) => run.id), ['run-1']);
       expect(snapshot.messages.whereType<UserMessage>().single.text, 'Prompt');
@@ -512,13 +514,152 @@ void main() {
 
       final snapshot = await repository.load('bc-1');
 
-      expect(seenPaths, ['/v1/agents/bc-1', '/v1/agents/bc-1/runs']);
+      expect(seenPaths, [
+        '/v1/agents/bc-1',
+        '/v1/agents/bc-1/runs',
+        '/v0/agents/bc-1/conversation',
+      ]);
       expect(
         snapshot.messages.whereType<AssistantMessage>().single.text,
         'Persisted result',
       );
     },
   );
+
+  test('load maps conversation user texts onto sorted runs', () async {
+    final store = RunPromptStore(database.runPromptsDao);
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      if (options.path == '/v1/agents/bc-1') {
+        return ResponseBody.fromString(
+          '{"agent":{"id":"bc-1","name":"Agent","status":"completed"}}',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      }
+      if (options.path == '/v0/agents/bc-1/conversation') {
+        return ResponseBody.fromString(
+          '''
+          {
+            "messages": [
+              {"id": "msg-1", "type": "user_message", "text": "First prompt"},
+              {"id": "msg-2", "type": "assistant_message", "text": "First answer"},
+              {"id": "msg-3", "type": "user_message", "text": "Second prompt"}
+            ]
+          }
+          ''',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      }
+      return ResponseBody.fromString(
+        '''
+        {
+          "items": [
+            {
+              "id": "run-2",
+              "status": "completed",
+              "resultText": "Second answer",
+              "createdAt": "2026-08-01T10:10:00.000Z"
+            },
+            {
+              "id": "run-1",
+              "status": "completed",
+              "resultText": "First answer",
+              "createdAt": "2026-08-01T10:05:00.000Z"
+            }
+          ]
+        }
+        ''',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = ThreadRepository(
+      apiClient: CursorApiClient(dio),
+      database: database,
+      sseClient: SseClient(dio),
+      runPromptStore: store,
+    );
+
+    final snapshot = await repository.load('bc-1');
+    final prompts = snapshot.messages.whereType<UserMessage>().toList();
+    final savedFirst = await database.runPromptsDao.getByRunId('bc-1', 'run-1');
+    final savedSecond = await database.runPromptsDao.getByRunId(
+      'bc-1',
+      'run-2',
+    );
+
+    expect(prompts.map((message) => message.text), [
+      'First prompt',
+      'Second prompt',
+    ]);
+    expect(savedFirst!.content, 'First prompt');
+    expect(savedSecond!.content, 'Second prompt');
+  });
+
+  test('load ignores missing conversation endpoint', () async {
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      if (options.path == '/v1/agents/bc-1') {
+        return ResponseBody.fromString(
+          '{"agent":{"id":"bc-1","name":"Agent","status":"completed"}}',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      }
+      if (options.path == '/v0/agents/bc-1/conversation') {
+        return ResponseBody.fromString(
+          '{"message":"Not found"}',
+          404,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      }
+      return ResponseBody.fromString(
+        '''
+        {
+          "items": [
+            {
+              "id": "run-1",
+              "status": "completed",
+              "promptText": "Fallback prompt",
+              "resultText": "Done",
+              "createdAt": "2026-08-01T10:05:00.000Z"
+            }
+          ]
+        }
+        ''',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = ThreadRepository(
+      apiClient: CursorApiClient(dio),
+      database: database,
+      sseClient: SseClient(dio),
+      runPromptStore: RunPromptStore(database.runPromptsDao),
+    );
+
+    final snapshot = await repository.load('bc-1');
+
+    expect(
+      snapshot.messages.whereType<UserMessage>().single.text,
+      'Fallback prompt',
+    );
+    expect(snapshot.messages.whereType<AssistantMessage>().single.text, 'Done');
+  });
 
   test('cached snapshot reload merges stored run result', () async {
     final resultStore = RunResultStore(database.runResultsDao);

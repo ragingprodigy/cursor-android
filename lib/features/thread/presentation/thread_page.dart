@@ -5,6 +5,7 @@ import 'package:cursor/features/thread/presentation/thread_bloc.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class ThreadPage extends HookWidget {
@@ -353,6 +354,7 @@ class _MessageBubble extends StatelessWidget {
         text: message.text,
         icon: Icons.smart_toy_outlined,
         alignment: Alignment.centerLeft,
+        useMarkdown: true,
       );
     }
     return _ToolBubble(message: message as ToolStepMessage);
@@ -365,12 +367,14 @@ class _TextBubble extends StatelessWidget {
     required this.text,
     required this.icon,
     required this.alignment,
+    this.useMarkdown = false,
   });
 
   final String label;
   final String text;
   final IconData icon;
   final Alignment alignment;
+  final bool useMarkdown;
 
   @override
   Widget build(BuildContext context) {
@@ -399,7 +403,17 @@ class _TextBubble extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 10),
-                Text(text, style: theme.textTheme.bodyLarge),
+                if (useMarkdown)
+                  GptMarkdown(
+                    text,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: theme.colorScheme.onSurface,
+                    ),
+                    followLinkColor: true,
+                    onLinkTap: (url, _) => _openMarkdownLink(context, url),
+                  )
+                else
+                  Text(text, style: theme.textTheme.bodyLarge),
               ],
             ),
           ),
@@ -407,6 +421,14 @@ class _TextBubble extends StatelessWidget {
       ),
     );
   }
+}
+
+Future<void> _openMarkdownLink(BuildContext context, String url) async {
+  final uri = Uri.tryParse(url);
+  if (uri == null) {
+    return;
+  }
+  await _openAgentUrl(context, uri);
 }
 
 class _ToolBubble extends StatelessWidget {

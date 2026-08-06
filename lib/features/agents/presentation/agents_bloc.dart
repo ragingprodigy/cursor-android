@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:cursor/core/error/app_exception.dart';
+import 'package:cursor/features/agents/data/agents_list_grouping_store.dart';
 import 'package:cursor/features/agents/data/agents_repository.dart';
+import 'package:cursor/features/agents/domain/agents_list_grouping.dart';
 import 'package:cursor/features/agents/domain/agent_summary.dart';
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -23,6 +26,15 @@ class AgentsRefreshed extends AgentsEvent {
   final Completer<void>? completer;
 }
 
+class AgentsGroupingChanged extends AgentsEvent {
+  const AgentsGroupingChanged(this.grouping);
+
+  final AgentsListGrouping grouping;
+
+  @override
+  List<Object?> get props => [grouping];
+}
+
 class _AgentsCacheChanged extends AgentsEvent {
   const _AgentsCacheChanged(this.snapshot);
 
@@ -40,46 +52,56 @@ class AgentsState extends Equatable {
     required this.agents,
     required this.isOffline,
     required this.isStale,
+    required this.grouping,
     this.message,
   });
 
-  const AgentsState.loading()
-    : this._(
-        status: AgentsStatus.loading,
-        agents: const [],
-        isOffline: false,
-        isStale: false,
-      );
+  const AgentsState.loading({
+    AgentsListGrouping grouping = AgentsListGrouping.flat,
+  }) : this._(
+         status: AgentsStatus.loading,
+         agents: const [],
+         isOffline: false,
+         isStale: false,
+         grouping: grouping,
+       );
 
   const AgentsState.cached(
     List<AgentSummary> agents, {
     bool isOffline = false,
     bool isStale = false,
+    AgentsListGrouping grouping = AgentsListGrouping.flat,
     String? message,
   }) : this._(
          status: AgentsStatus.cached,
          agents: agents,
          isOffline: isOffline,
          isStale: isStale,
+         grouping: grouping,
          message: message,
        );
 
-  const AgentsState.ready(List<AgentSummary> agents)
-    : this._(
-        status: AgentsStatus.ready,
-        agents: agents,
-        isOffline: false,
-        isStale: false,
-      );
+  const AgentsState.ready(
+    List<AgentSummary> agents, {
+    AgentsListGrouping grouping = AgentsListGrouping.flat,
+  }) : this._(
+         status: AgentsStatus.ready,
+         agents: agents,
+         isOffline: false,
+         isStale: false,
+         grouping: grouping,
+       );
 
   const AgentsState.failure(
     String message, {
     List<AgentSummary> agents = const [],
+    AgentsListGrouping grouping = AgentsListGrouping.flat,
   }) : this._(
          status: AgentsStatus.failure,
          agents: agents,
          isOffline: false,
          isStale: false,
+         grouping: grouping,
          message: message,
        );
 
@@ -87,22 +109,29 @@ class AgentsState extends Equatable {
   final List<AgentSummary> agents;
   final bool isOffline;
   final bool isStale;
+  final AgentsListGrouping grouping;
   final String? message;
 
   bool get isLoading => status == AgentsStatus.loading;
 
   @override
-  List<Object?> get props => [status, agents, isOffline, isStale, message];
+  List<Object?> get props {
+    return [status, agents, isOffline, isStale, grouping, message];
+  }
 }
 
 class AgentsBloc extends Bloc<AgentsEvent, AgentsState> {
-  AgentsBloc(this._repository) : super(const AgentsState.loading()) {
+  AgentsBloc(this._repository, {AgentsListGroupingStore? groupingStore})
+    : _groupingStore = groupingStore ?? AgentsListGroupingStore(),
+      super(const AgentsState.loading()) {
     on<AgentsStarted>(_onStarted);
     on<AgentsRefreshed>(_onRefreshed);
+    on<AgentsGroupingChanged>(_onGroupingChanged);
     on<_AgentsCacheChanged>(_onCacheChanged);
   }
 
   final AgentsRepository _repository;
+  final AgentsListGroupingStore _groupingStore;
   StreamSubscription<AgentsSnapshot>? _cacheSubscription;
   List<AgentSummary> _lastCachedAgents = const [];
 
@@ -110,7 +139,8 @@ class AgentsBloc extends Bloc<AgentsEvent, AgentsState> {
     AgentsStarted event,
     Emitter<AgentsState> emit,
   ) async {
-    emit(const AgentsState.loading());
+    final grouping = await _loadGrouping();
+    emit(AgentsState.loading(grouping: grouping));
     await _cacheSubscription?.cancel();
     _cacheSubscription = _repository.watchCached().listen((snapshot) {
       add(_AgentsCacheChanged(snapshot));
@@ -130,6 +160,7 @@ class AgentsBloc extends Bloc<AgentsEvent, AgentsState> {
             snapshot.agents,
             isOffline: snapshot.isOffline,
             isStale: true,
+            grouping: state.grouping,
             message: snapshot.isOffline
                 ? 'Showing cached agents while offline.'
                 : 'Showing cached agents.',
@@ -137,7 +168,7 @@ class AgentsBloc extends Bloc<AgentsEvent, AgentsState> {
         );
         return;
       }
-      emit(AgentsState.ready(snapshot.agents));
+      emit(AgentsState.ready(snapshot.agents, grouping: state.grouping));
     } on AppException catch (error) {
       emit(_failurePreservingAgents(error.message));
     } catch (_) {
@@ -150,9 +181,13 @@ class AgentsBloc extends Bloc<AgentsEvent, AgentsState> {
   AgentsState _failurePreservingAgents(String message) {
     final agents = _agentsToPreserve();
     if (agents.isEmpty) {
-      return AgentsState.failure(message);
+      return AgentsState.failure(message, grouping: state.grouping);
     }
-    return AgentsState.failure(message, agents: agents);
+    return AgentsState.failure(
+      message,
+      agents: agents,
+      grouping: state.grouping,
+    );
   }
 
   List<AgentSummary> _agentsToPreserve() {
@@ -175,11 +210,65 @@ class AgentsBloc extends Bloc<AgentsEvent, AgentsState> {
     }
 
     if (state.status == AgentsStatus.ready) {
-      emit(AgentsState.ready(event.snapshot.agents));
+      emit(AgentsState.ready(event.snapshot.agents, grouping: state.grouping));
       return;
     }
 
-    emit(AgentsState.cached(event.snapshot.agents));
+    emit(AgentsState.cached(event.snapshot.agents, grouping: state.grouping));
+  }
+
+  Future<void> _onGroupingChanged(
+    AgentsGroupingChanged event,
+    Emitter<AgentsState> emit,
+  ) async {
+    if (event.grouping == state.grouping) {
+      return;
+    }
+
+    emit(_stateWithGrouping(event.grouping));
+    try {
+      await _groupingStore.save(event.grouping);
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to save agents grouping preference.',
+        name: 'AgentsBloc',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  Future<AgentsListGrouping> _loadGrouping() async {
+    try {
+      return await _groupingStore.load();
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to load agents grouping preference.',
+        name: 'AgentsBloc',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return AgentsListGrouping.flat;
+    }
+  }
+
+  AgentsState _stateWithGrouping(AgentsListGrouping grouping) {
+    return switch (state.status) {
+      AgentsStatus.loading => AgentsState.loading(grouping: grouping),
+      AgentsStatus.cached => AgentsState.cached(
+        state.agents,
+        isOffline: state.isOffline,
+        isStale: state.isStale,
+        grouping: grouping,
+        message: state.message,
+      ),
+      AgentsStatus.ready => AgentsState.ready(state.agents, grouping: grouping),
+      AgentsStatus.failure => AgentsState.failure(
+        state.message ?? 'Unable to load agents.',
+        agents: state.agents,
+        grouping: grouping,
+      ),
+    };
   }
 
   @override
