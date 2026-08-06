@@ -13,12 +13,47 @@ class ThreadPage extends HookWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scrollController = useScrollController();
+    final hasScrolledToLatest = useRef(false);
+
     useEffect(() {
       context.read<ThreadBloc>().add(const ThreadStarted());
+      hasScrolledToLatest.value = false;
       return null;
     }, const []);
 
-    return BlocBuilder<ThreadBloc, ThreadState>(
+    return BlocConsumer<ThreadBloc, ThreadState>(
+      listenWhen: (previous, next) {
+        final previousMessages = previous.displayMessages;
+        final nextMessages = next.displayMessages;
+        if (nextMessages.isEmpty || next.isLoading) {
+          return false;
+        }
+
+        final becameReady =
+            (previous.isLoading || previousMessages.isEmpty) &&
+            nextMessages.isNotEmpty;
+        final grew = nextMessages.length > previousMessages.length;
+        final liveGrew =
+            (previous.liveAssistantText?.length ?? 0) <
+            (next.liveAssistantText?.length ?? 0);
+        final liveToolsGrew =
+            previous.liveToolSteps.length < next.liveToolSteps.length;
+
+        // First open: always scroll. Later updates: keep pinned to latest
+        // while streaming / appending (chat-style follow).
+        return becameReady ||
+            !hasScrolledToLatest.value ||
+            grew ||
+            liveGrew ||
+            liveToolsGrew;
+      },
+      listener: (context, state) {
+        _scrollToLatestMessage(
+          scrollController,
+          onScrolled: () => hasScrolledToLatest.value = true,
+        );
+      },
       builder: (context, state) {
         final messages = state.displayMessages;
         return Scaffold(
@@ -36,6 +71,7 @@ class ThreadPage extends HookWidget {
                   child: RefreshIndicator(
                     onRefresh: () => _refresh(context),
                     child: ListView(
+                      controller: scrollController,
                       physics: const AlwaysScrollableScrollPhysics(),
                       padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
                       children: [
@@ -102,6 +138,28 @@ class ThreadPage extends HookWidget {
     context.read<ThreadBloc>().add(ThreadRefreshed(completer: completer));
     return completer.future;
   }
+}
+
+void _scrollToLatestMessage(
+  ScrollController scrollController, {
+  VoidCallback? onScrolled,
+}) {
+  void jump() {
+    if (!scrollController.hasClients) {
+      return;
+    }
+    final max = scrollController.position.maxScrollExtent;
+    if (scrollController.offset < max) {
+      scrollController.jumpTo(max);
+    }
+    onScrolled?.call();
+  }
+
+  // Markdown / entrance animations can grow extent after the first frame.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    jump();
+    WidgetsBinding.instance.addPostFrameCallback((_) => jump());
+  });
 }
 
 class _MessageEntry extends StatelessWidget {
