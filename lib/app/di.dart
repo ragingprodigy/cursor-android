@@ -18,6 +18,8 @@ import 'package:cursor/features/thread/data/run_prompt_store.dart';
 import 'package:cursor/features/thread/data/run_result_store.dart';
 import 'package:cursor/features/thread/data/thread_repository.dart';
 import 'package:cursor/features/thread/presentation/thread_bloc.dart';
+import 'package:cursor/features/prompts/data/prompt_library_repository.dart';
+import 'package:cursor/features/prompts/presentation/prompt_library_bloc.dart';
 import 'package:dio/dio.dart';
 
 class AppDependencies {
@@ -87,6 +89,8 @@ class AppDependencies {
     catalogRemoteSource: catalogRemoteSource,
     runPromptStore: runPromptStore,
   );
+  late final PromptLibraryRepository promptLibraryRepository =
+      PromptLibraryRepository(database.savedPromptsDao);
   late final AuthSessionRepository authSession =
       _authSessionOverride ??
       AuthSessionRepository(
@@ -121,6 +125,10 @@ class AppDependencies {
       agentId: agentId,
       onUnauthorized: authSession.signOut,
     );
+  }
+
+  PromptLibraryBloc createPromptLibraryBloc() {
+    return PromptLibraryBloc(promptLibraryRepository);
   }
 }
 

@@ -69,6 +69,20 @@ class RunResults extends Table {
   Set<Column<Object>> get primaryKey => {agentId, runId};
 }
 
+@DataClassName('SavedPromptRow')
+class SavedPrompts extends Table {
+  TextColumn get id => text()();
+  TextColumn get title => text()();
+  TextColumn get body => text()();
+  TextColumn get notes => text().nullable()();
+  TextColumn get tags => text().withDefault(const Constant(''))();
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
 @DriftAccessor(tables: [Agents])
 class AgentsDao extends DatabaseAccessor<AppDatabase> with _$AgentsDaoMixin {
   AgentsDao(super.db);
@@ -229,14 +243,58 @@ class RunResultsDao extends DatabaseAccessor<AppDatabase>
   }
 }
 
+@DriftAccessor(tables: [SavedPrompts])
+class SavedPromptsDao extends DatabaseAccessor<AppDatabase>
+    with _$SavedPromptsDaoMixin {
+  SavedPromptsDao(super.db);
+
+  Future<List<SavedPromptRow>> getAll() {
+    return (select(savedPrompts)..orderBy([
+          (prompt) => OrderingTerm.desc(prompt.updatedAt),
+          (prompt) => OrderingTerm.asc(prompt.title),
+        ]))
+        .get();
+  }
+
+  Stream<List<SavedPromptRow>> watchAll() {
+    return (select(savedPrompts)..orderBy([
+          (prompt) => OrderingTerm.desc(prompt.updatedAt),
+          (prompt) => OrderingTerm.asc(prompt.title),
+        ]))
+        .watch();
+  }
+
+  Future<SavedPromptRow?> getById(String id) {
+    return (select(
+      savedPrompts,
+    )..where((prompt) => prompt.id.equals(id))).getSingleOrNull();
+  }
+
+  Future<void> upsert(SavedPromptsCompanion row) {
+    return into(savedPrompts).insertOnConflictUpdate(row);
+  }
+
+  Future<int> deleteById(String id) {
+    return (delete(savedPrompts)..where((prompt) => prompt.id.equals(id))).go();
+  }
+}
+
 @DriftDatabase(
-  tables: [Agents, ThreadSnapshots, Drafts, RunPrompts, RunResults],
+  tables: [
+    Agents,
+    ThreadSnapshots,
+    Drafts,
+    RunPrompts,
+    RunResults,
+    SavedPrompts,
+  ],
   daos: [
     AgentsDao,
     ThreadSnapshotsDao,
     DraftsDao,
     RunPromptsDao,
     RunResultsDao,
+    SavedPromptsDao,
   ],
 )
 class AppDatabase extends _$AppDatabase {
@@ -247,7 +305,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.defaults() : this(_openDefaultDatabase());
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration {
@@ -258,6 +316,9 @@ class AppDatabase extends _$AppDatabase {
         }
         if (from < 3) {
           await migrator.createTable(runResults);
+        }
+        if (from < 4) {
+          await migrator.createTable(savedPrompts);
         }
       },
     );
@@ -270,6 +331,7 @@ class AppDatabase extends _$AppDatabase {
       batch.deleteAll(drafts);
       batch.deleteAll(runPrompts);
       batch.deleteAll(runResults);
+      // Saved prompts are user content and intentionally retained.
     });
   }
 }

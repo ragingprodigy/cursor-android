@@ -112,6 +112,18 @@ class SettingsPage extends HookWidget {
             ),
             const SizedBox(height: 16),
             Card(
+              child: ListTile(
+                leading: const Icon(Icons.library_books_outlined),
+                title: const Text('Prompt library'),
+                subtitle: const Text(
+                  'Save and reuse prompts for Launch and follow-ups.',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => context.push('/settings/prompts'),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Card(
               child: Padding(
                 padding: const EdgeInsets.all(20),
                 child: Column(
@@ -121,7 +133,8 @@ class SettingsPage extends HookWidget {
                     const SizedBox(height: 12),
                     Text(
                       'Clear cached agents, threads, and unsent drafts stored '
-                      'on this device. Your API key remains connected.',
+                      'on this device. Your API key and prompt library stay '
+                      'intact.',
                       style: theme.textTheme.bodyMedium,
                     ),
                     const SizedBox(height: 20),
