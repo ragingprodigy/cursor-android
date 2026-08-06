@@ -3,20 +3,37 @@ import 'dart:convert';
 import 'package:cursor/core/error/app_exception.dart';
 import 'package:cursor/features/thread/domain/agent_usage.dart';
 
+/// Parses `GET /v1/agents/{id}/usage`.
+///
+/// Documented shape:
+/// ```json
+/// {
+///   "totalUsage": { "inputTokens", "outputTokens", "cacheWriteTokens",
+///                   "cacheReadTokens", "totalTokens" },
+///   "runs": [{ "id": "...", "usage": { ...same fields... } }]
+/// }
+/// ```
+/// Also accepts a legacy wrapper `{ "usage": { "totalTokens", "runs": [...] } }`
+/// with flat per-run token fields.
 AgentUsage parseAgentUsage(Object? data) {
   final payload = _asMap(data, 'Cursor usage response');
-  final usage =
-      _mapAt(payload, 'usage') ?? _mapAt(payload, 'agentUsage') ?? payload;
-  final runs = _runUsagesFromPayload(usage);
-  final explicitTotal = _intAt(usage, const [
-    'totalTokens',
-    'total_tokens',
-    'tokens',
-    'tokenCount',
-    'token_count',
-  ]);
+  final totals =
+      _mapAt(payload, 'totalUsage') ??
+      _mapAt(payload, 'usage') ??
+      _mapAt(payload, 'agentUsage') ??
+      payload;
+
+  var runs = _runUsagesFromPayload(payload);
+  if (runs.isEmpty) {
+    runs = _runUsagesFromPayload(totals);
+  }
+
+  final explicitTotal = _tokenTotal(totals);
   final summedTotal = runs.fold<int>(0, (sum, run) => sum + run.totalTokens);
-  return AgentUsage(totalTokens: explicitTotal ?? summedTotal, runs: runs);
+  return AgentUsage(
+    totalTokens: explicitTotal > 0 ? explicitTotal : summedTotal,
+    runs: runs,
+  );
 }
 
 List<RunUsage> _runUsagesFromPayload(Map<String, Object?> payload) {
@@ -40,7 +57,8 @@ RunUsage? _runUsageFromMap(Map<String, Object?> json) {
   if (runId == null) {
     return null;
   }
-  final inputTokens = _intAt(json, const [
+  final tokenSource = _mapAt(json, 'usage') ?? json;
+  final inputTokens = _intAt(tokenSource, const [
     'inputTokens',
     'input_tokens',
     'promptTokens',
@@ -50,7 +68,7 @@ RunUsage? _runUsageFromMap(Map<String, Object?> json) {
     'totalReadTokens',
     'total_read_tokens',
   ]);
-  final outputTokens = _intAt(json, const [
+  final outputTokens = _intAt(tokenSource, const [
     'outputTokens',
     'output_tokens',
     'completionTokens',
@@ -60,15 +78,48 @@ RunUsage? _runUsageFromMap(Map<String, Object?> json) {
     'totalWriteTokens',
     'total_write_tokens',
   ]);
-  final totalTokens =
-      _intAt(json, const ['totalTokens', 'total_tokens', 'tokens']) ??
-      (inputTokens ?? 0) + (outputTokens ?? 0);
+  final totalTokens = _tokenTotal(tokenSource);
   return RunUsage(
     runId: runId,
-    totalTokens: totalTokens,
+    totalTokens: totalTokens > 0
+        ? totalTokens
+        : (inputTokens ?? 0) + (outputTokens ?? 0),
     inputTokens: inputTokens,
     outputTokens: outputTokens,
   );
+}
+
+int _tokenTotal(Map<String, Object?> json) {
+  final direct = _intAt(json, const [
+    'totalTokens',
+    'total_tokens',
+    'tokens',
+    'tokenCount',
+    'token_count',
+  ]);
+  if (direct != null) {
+    return direct;
+  }
+
+  var total = 0;
+  for (final keys in const [
+    ['inputTokens', 'input_tokens'],
+    ['outputTokens', 'output_tokens'],
+    ['cacheWriteTokens', 'cache_write_tokens'],
+    ['cacheReadTokens', 'cache_read_tokens'],
+  ]) {
+    total += _intAt(json, keys) ?? 0;
+  }
+  if (total > 0) {
+    return total;
+  }
+  for (final keys in const [
+    ['totalReadTokens', 'total_read_tokens'],
+    ['totalWriteTokens', 'total_write_tokens'],
+  ]) {
+    total += _intAt(json, keys) ?? 0;
+  }
+  return total;
 }
 
 Map<String, Object?> _asMap(Object? data, String subject) {

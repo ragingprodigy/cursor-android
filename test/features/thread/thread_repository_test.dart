@@ -847,16 +847,25 @@ void main() {
       return ResponseBody.fromString(
         '''
         {
-          "usage": {
-            "totalTokens": 42,
-            "runs": [
-              {
-                "runId": "run-1",
+          "totalUsage": {
+            "inputTokens": 10,
+            "outputTokens": 32,
+            "cacheWriteTokens": 0,
+            "cacheReadTokens": 0,
+            "totalTokens": 42
+          },
+          "runs": [
+            {
+              "id": "run-1",
+              "usage": {
                 "inputTokens": 10,
-                "outputTokens": 32
+                "outputTokens": 32,
+                "cacheWriteTokens": 0,
+                "cacheReadTokens": 0,
+                "totalTokens": 42
               }
-            ]
-          }
+            }
+          ]
         }
         ''',
         200,

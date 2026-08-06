@@ -194,7 +194,7 @@ class UsageRepository {
             );
         final payload = _asMap(response.data);
         members.addAll(_spendItems(payload));
-        totalPages = math.max(1, _intAt(payload, const ['totalPages']) ?? 1);
+        totalPages = _totalPages(payload);
         if (totalPages > _maxPages && page == _maxPages) {
           truncated = true;
           truncationReason ??= 'page cap';
@@ -267,7 +267,7 @@ class UsageRepository {
             );
         final payload = _asMap(response.data);
         items.addAll(_eventItems(payload));
-        totalPages = math.max(1, _intAt(payload, const ['totalPages']) ?? 1);
+        totalPages = _totalPages(payload);
         if (totalPages > _maxPages && page == _maxPages) {
           truncated = true;
           truncationReason ??= 'page cap';
@@ -386,6 +386,26 @@ class UsageRepository {
         payload['items'] ??
         payload['data'];
     return items is List ? items : const [];
+  }
+
+  /// Admin spend uses top-level `totalPages`; filtered-usage-events uses
+  /// `pagination.numPages` (see Cursor Admin API docs).
+  int _totalPages(Map<String, Object?> payload) {
+    final topLevel = _intAt(payload, const ['totalPages', 'numPages']);
+    if (topLevel != null) {
+      return math.max(1, topLevel);
+    }
+    final pagination = payload['pagination'];
+    if (pagination is Map) {
+      final nested = _intAt(_stringKeyedMap(pagination), const [
+        'numPages',
+        'totalPages',
+      ]);
+      if (nested != null) {
+        return math.max(1, nested);
+      }
+    }
+    return 1;
   }
 
   int _tokenTotal(Map<String, Object?> json) {
