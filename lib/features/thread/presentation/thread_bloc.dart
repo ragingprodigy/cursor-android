@@ -768,9 +768,19 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       return;
     }
 
-    final message = error is RateLimitedException
-        ? 'Rate limited, retrying stream...'
-        : 'Stream disconnected, retrying...';
+    if (error is RateLimitedException) {
+      const message = 'Rate limited, retrying stream...';
+      emit(_withActionMessage(message, state));
+      _scheduleReconnect(event.runId, message: message);
+      return;
+    }
+
+    if (error == null) {
+      _scheduleReconnect(event.runId);
+      return;
+    }
+
+    const message = 'Stream disconnected, retrying...';
     emit(_withActionMessage(message, state));
     _scheduleReconnect(event.runId, message: message);
   }
