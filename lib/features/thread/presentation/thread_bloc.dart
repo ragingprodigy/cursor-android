@@ -1170,9 +1170,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   void _scheduleStatusFinalize(String runId) {
     _statusFinalizeTimer?.cancel();
     _statusFinalizeTimer = Timer(const Duration(milliseconds: 750), () {
-      if (_streamingRunId == runId && !_streamSuspended) {
-        add(_ThreadStatusFinalize(runId));
+      if (isClosed || _streamingRunId != runId || _streamSuspended) {
+        return;
       }
+      add(_ThreadStatusFinalize(runId));
     });
   }
 
@@ -1687,6 +1688,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _pollTimer?.cancel();
     _reconnectTimer?.cancel();
     _streamRefreshTimer?.cancel();
+    _statusFinalizeTimer?.cancel();
+    _statusFinalizeTimer = null;
     return super.close();
   }
 }
