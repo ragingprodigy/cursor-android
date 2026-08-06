@@ -334,6 +334,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     required String agentId,
     Duration pollInterval = const Duration(seconds: 3),
     Duration reconnectDelay = const Duration(seconds: 2),
+    Duration maxReconnectDelay = const Duration(seconds: 60),
+    int maxReconnectAttempts = 10,
+    int refreshEveryReconnectFailures = 3,
+    FutureOr<void> Function()? onUnauthorized,
   }) {
     return ThreadBloc._(
       repository,
@@ -341,6 +345,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       agentId,
       pollInterval,
       reconnectDelay,
+      maxReconnectDelay,
+      maxReconnectAttempts,
+      refreshEveryReconnectFailures,
+      onUnauthorized,
     );
   }
 
@@ -350,6 +358,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     this._agentId,
     this._pollInterval,
     this._reconnectDelay,
+    this._maxReconnectDelay,
+    this._maxReconnectAttempts,
+    this._refreshEveryReconnectFailures,
+    this._onUnauthorized,
   ) : super(ThreadState.loading(_agentId)) {
     on<ThreadStarted>(_onStarted);
     on<ThreadRefreshed>(_onRefreshed);
@@ -367,6 +379,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   final String _agentId;
   final Duration _pollInterval;
   final Duration _reconnectDelay;
+  final Duration _maxReconnectDelay;
+  final int _maxReconnectAttempts;
+  final int _refreshEveryReconnectFailures;
+  final FutureOr<void> Function()? _onUnauthorized;
 
   StreamSubscription<ThreadSnapshot>? _cacheSubscription;
   StreamSubscription<SseEvent>? _streamSubscription;
@@ -382,6 +398,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   String? _actionMessage;
   String? _streamingRunId;
   String? _lastEventId;
+  int _reconnectAttempts = 0;
+  bool _retriedInvalidLastEventId = false;
   final StringBuffer _liveAssistantBuffer = StringBuffer();
   final Map<String, ToolStepMessage> _liveToolStepsById = {};
 
@@ -625,12 +643,16 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     );
   }
 
-  void _onStreamEvent(_ThreadStreamEvent event, Emitter<ThreadState> emit) {
+  Future<void> _onStreamEvent(
+    _ThreadStreamEvent event,
+    Emitter<ThreadState> emit,
+  ) async {
     if (event.runId != _streamingRunId) {
       return;
     }
 
     final sse = event.event;
+    _reconnectAttempts = 0;
     if (sse.id != null && sse.id!.isNotEmpty) {
       _lastEventId = sse.id;
     }
@@ -644,8 +666,30 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       case 'tool_call':
         _upsertLiveToolStep(sse.data);
         emit(state.copyWith(liveToolSteps: _liveToolStepsById.values.toList()));
+      case 'status':
+        final runStatus = _extractRunStatus(sse.data);
+        if (runStatus != null && !AgentRun.activeStatuses.contains(runStatus)) {
+          _stopStreaming();
+          emit(_clearLiveOverlay(state.copyWith(isLatestRunActive: false)));
+          add(const ThreadRefreshed());
+        } else if (runStatus != null) {
+          emit(state.copyWith(isLatestRunActive: true, actionMessage: null));
+        }
+      case 'error':
+        emit(
+          _withActionMessage(
+            _extractEventMessage(sse.data) ??
+                'Cursor stream reported an error.',
+            state,
+          ),
+        );
       case 'result':
+        await _persistStreamResult(event.runId, sse.data);
+        _stopStreaming();
+        emit(_clearLiveOverlay(state));
+        add(const ThreadRefreshed());
       case 'done':
+        await _persistStreamResult(event.runId, sse.data);
         _stopStreaming();
         emit(_clearLiveOverlay(state));
         add(const ThreadRefreshed());
@@ -664,10 +708,71 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
 
     final error = event.error;
     if (error is ApiException && error.statusCode == 410) {
+      emit(_withActionMessage('Stream expired. Polling run status.', state));
       _startPolling(event.runId);
       return;
     }
-    _scheduleReconnect(event.runId);
+    if (error is UnauthorizedException) {
+      _stopStreaming();
+      final callback = _onUnauthorized;
+      if (callback != null) {
+        await callback();
+      }
+      _actionMessage = error.message;
+      emit(
+        ThreadState.failure(
+          _agentId,
+          error.message,
+          agent: state.agent ?? _lastAgent,
+          messages: state.messages.isNotEmpty ? state.messages : _lastMessages,
+          latestRunId: state.latestRunId ?? _lastLatestRunId,
+          isLatestRunActive: false,
+          followUpDraft: _followUpDraft,
+          actionMessage: error.message,
+        ),
+      );
+      return;
+    }
+
+    if (_isInvalidLastEventId(error)) {
+      if (!_retriedInvalidLastEventId) {
+        _retriedInvalidLastEventId = true;
+        _lastEventId = null;
+        emit(
+          _withActionMessage(
+            'Stream resume expired. Reconnecting from latest events.',
+            state,
+          ),
+        );
+        _scheduleReconnect(
+          event.runId,
+          message: 'Stream resume expired. Reconnecting from latest events.',
+        );
+        return;
+      }
+      emit(
+        _withActionMessage('Stream resume failed. Polling run status.', state),
+      );
+      _startPolling(event.runId);
+      return;
+    }
+
+    if (_reconnectAttempts >= _maxReconnectAttempts) {
+      _stopStreaming();
+      emit(
+        _withActionMessage(
+          'Stream disconnected. Pull to refresh for the latest run status.',
+          _clearLiveOverlay(state.copyWith(isLatestRunActive: false)),
+        ),
+      );
+      return;
+    }
+
+    final message = error is RateLimitedException
+        ? 'Rate limited, retrying stream...'
+        : 'Stream disconnected, retrying...';
+    emit(_withActionMessage(message, state));
+    _scheduleReconnect(event.runId, message: message);
   }
 
   Future<void> _onPollTick(
@@ -704,6 +809,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   void _startStreaming(String runId) {
     _stopStreaming();
     _streamingRunId = runId;
+    _reconnectAttempts = 0;
+    _retriedInvalidLastEventId = false;
     _attachStream(runId);
   }
 
@@ -733,9 +840,17 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     );
   }
 
-  void _scheduleReconnect(String runId) {
+  void _scheduleReconnect(String runId, {String? message}) {
     _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(_reconnectDelay, () {
+    _reconnectAttempts += 1;
+    if (message != null) {
+      _actionMessage = message;
+    }
+    if (_refreshEveryReconnectFailures > 0 &&
+        _reconnectAttempts % _refreshEveryReconnectFailures == 0) {
+      add(const ThreadRefreshed());
+    }
+    _reconnectTimer = Timer(_reconnectBackoff(_reconnectAttempts), () {
       if (_streamingRunId == runId) {
         _attachStream(runId, lastEventId: _lastEventId);
       }
@@ -751,8 +866,21 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _reconnectTimer = null;
     _streamingRunId = null;
     _lastEventId = null;
+    _reconnectAttempts = 0;
+    _retriedInvalidLastEventId = false;
     _liveAssistantBuffer.clear();
     _liveToolStepsById.clear();
+  }
+
+  Duration _reconnectBackoff(int attempt) {
+    var milliseconds = _reconnectDelay.inMilliseconds;
+    for (var i = 1; i < attempt; i += 1) {
+      milliseconds *= 2;
+      if (milliseconds >= _maxReconnectDelay.inMilliseconds) {
+        return _maxReconnectDelay;
+      }
+    }
+    return Duration(milliseconds: milliseconds);
   }
 
   ThreadState _clearLiveOverlay(ThreadState base) {
@@ -778,6 +906,118 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       // Not JSON; treat the raw payload as plain text.
     }
     return data;
+  }
+
+  Future<void> _persistStreamResult(String runId, String data) async {
+    final resultText =
+        _extractResultText(data) ??
+        _blankToNull(_liveAssistantBuffer.toString());
+    if (resultText == null) {
+      return;
+    }
+    await _repository.saveRunResult(
+      agentId: _agentId,
+      runId: runId,
+      text: resultText,
+    );
+  }
+
+  String? _extractResultText(String data) {
+    try {
+      final decoded = jsonDecode(data);
+      if (decoded is Map) {
+        final map = decoded.map(
+          (key, value) => MapEntry(key.toString(), value),
+        );
+        return _firstString(map, const [
+              'text',
+              'resultText',
+              'result_text',
+              'content',
+              'summary',
+              'output',
+              'message',
+            ]) ??
+            _nestedString(map['result']) ??
+            _nestedString(map['response']) ??
+            _nestedString(map['output']);
+      }
+      if (decoded is String) {
+        return _blankToNull(decoded);
+      }
+    } on FormatException {
+      return _blankToNull(data);
+    }
+    return null;
+  }
+
+  String? _extractEventMessage(String data) {
+    try {
+      final decoded = jsonDecode(data);
+      if (decoded is Map) {
+        final map = decoded.map(
+          (key, value) => MapEntry(key.toString(), value),
+        );
+        return _firstString(map, const ['message', 'error', 'detail']);
+      }
+      if (decoded is String) {
+        return _blankToNull(decoded);
+      }
+    } on FormatException {
+      return _blankToNull(data);
+    }
+    return null;
+  }
+
+  String? _extractRunStatus(String data) {
+    try {
+      final decoded = jsonDecode(data);
+      if (decoded is Map) {
+        final map = decoded.map(
+          (key, value) => MapEntry(key.toString(), value),
+        );
+        return _firstString(map, const ['status', 'state'])?.toUpperCase();
+      }
+      if (decoded is String) {
+        return _blankToNull(decoded)?.toUpperCase();
+      }
+    } on FormatException {
+      return _blankToNull(data)?.toUpperCase();
+    }
+    return null;
+  }
+
+  bool _isInvalidLastEventId(Object? error) {
+    return error is ApiException &&
+        error.statusCode == 400 &&
+        error.message.toLowerCase().contains('invalid_last_event_id');
+  }
+
+  String? _nestedString(Object? value) {
+    if (value is String) {
+      return _blankToNull(value);
+    }
+    if (value is Map) {
+      final map = value.map((key, value) => MapEntry(key.toString(), value));
+      return _firstString(map, const [
+        'text',
+        'content',
+        'summary',
+        'output',
+        'message',
+      ]);
+    }
+    return null;
+  }
+
+  String? _firstString(Map<String, Object?> json, List<String> keys) {
+    for (final key in keys) {
+      final value = json[key];
+      if (value is String && value.trim().isNotEmpty) {
+        return value.trim();
+      }
+    }
+    return null;
   }
 
   void _upsertLiveToolStep(String data) {
@@ -876,4 +1116,9 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _reconnectTimer?.cancel();
     return super.close();
   }
+}
+
+String? _blankToNull(String? value) {
+  final trimmed = value?.trim();
+  return trimmed == null || trimmed.isEmpty ? null : trimmed;
 }

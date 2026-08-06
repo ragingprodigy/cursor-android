@@ -63,6 +63,13 @@ void main() {
     when(() => draftStore.save(any(), any())).thenAnswer((_) async {});
     when(() => draftStore.clear(any())).thenAnswer((_) async {});
     when(
+      () => repository.saveRunResult(
+        agentId: any(named: 'agentId'),
+        runId: any(named: 'runId'),
+        text: any(named: 'text'),
+      ),
+    ).thenAnswer((_) async {});
+    when(
       () => repository.streamRun(
         any(),
         any(),
@@ -642,6 +649,13 @@ void main() {
         verify(
           () => repository.streamRun('bc-1', 'run-active', lastEventId: null),
         ).called(1);
+        verify(
+          () => repository.saveRunResult(
+            agentId: 'bc-1',
+            runId: 'run-active',
+            text: 'Hello',
+          ),
+        ).called(1);
         expect(bloc.state.isLatestRunActive, isFalse);
         expect(bloc.state.liveAssistantText, isNull);
         expect(bloc.state.liveToolSteps, isEmpty);
@@ -649,6 +663,102 @@ void main() {
           bloc.state.messages.whereType<AssistantMessage>().last.text,
           'All done',
         );
+      },
+    );
+
+    blocTest<ThreadBloc, ThreadState>(
+      'persists SSE result text before refreshing and clearing live overlay',
+      build: () {
+        var loadCount = 0;
+        when(() => repository.load('bc-1')).thenAnswer((_) async {
+          loadCount++;
+          if (loadCount == 1) {
+            return ThreadSnapshot.fresh(agent: agent, runs: [activeRun]);
+          }
+          return ThreadSnapshot.fresh(
+            agent: agent,
+            runs: [
+              AgentRun(
+                id: 'run-active',
+                status: 'completed',
+                resultText: 'Final answer',
+                createdAt: activeRun.createdAt,
+              ),
+            ],
+          );
+        });
+        return buildBloc();
+      },
+      act: (bloc) async {
+        bloc.add(const ThreadRefreshed());
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(
+          const SseEvent(event: 'result', data: '{"text":"Final answer"}'),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      },
+      verify: (bloc) {
+        verify(
+          () => repository.saveRunResult(
+            agentId: 'bc-1',
+            runId: 'run-active',
+            text: 'Final answer',
+          ),
+        ).called(1);
+        expect(bloc.state.liveAssistantText, isNull);
+        expect(
+          bloc.state.messages.whereType<AssistantMessage>().last.text,
+          'Final answer',
+        );
+      },
+    );
+
+    blocTest<ThreadBloc, ThreadState>(
+      'surfaces SSE error event message without stopping the stream',
+      build: () {
+        when(() => repository.load('bc-1')).thenAnswer((_) async {
+          return ThreadSnapshot.fresh(agent: agent, runs: [activeRun]);
+        });
+        return buildBloc();
+      },
+      act: (bloc) async {
+        bloc.add(const ThreadRefreshed());
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(
+          const SseEvent(event: 'error', data: '{"message":"tool failed"}'),
+        );
+        await Future<void>.delayed(Duration.zero);
+      },
+      verify: (bloc) {
+        expect(bloc.state.actionMessage, 'tool failed');
+        expect(bloc.state.isLatestRunActive, isTrue);
+      },
+    );
+
+    blocTest<ThreadBloc, ThreadState>(
+      'refreshes when SSE status reports a terminal state',
+      build: () {
+        var loadCount = 0;
+        when(() => repository.load('bc-1')).thenAnswer((_) async {
+          loadCount++;
+          if (loadCount == 1) {
+            return ThreadSnapshot.fresh(agent: agent, runs: [activeRun]);
+          }
+          return ThreadSnapshot.fresh(agent: agent, runs: [completedRun]);
+        });
+        return buildBloc();
+      },
+      act: (bloc) async {
+        bloc.add(const ThreadRefreshed());
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(
+          const SseEvent(event: 'status', data: '{"status":"completed"}'),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      },
+      verify: (bloc) {
+        expect(bloc.state.isLatestRunActive, isFalse);
+        expect(bloc.state.liveAssistantText, isNull);
       },
     );
 
@@ -723,6 +833,114 @@ void main() {
         verify(
           () => repository.streamRun('bc-1', 'run-active', lastEventId: '5'),
         ).called(greaterThanOrEqualTo(1));
+      },
+    );
+
+    var unauthorizedCalled = false;
+    blocTest<ThreadBloc, ThreadState>(
+      'stops reconnecting and invokes unauthorized callback on 401',
+      setUp: () {
+        unauthorizedCalled = false;
+      },
+      build: () {
+        when(() => repository.load('bc-1')).thenAnswer((_) async {
+          return ThreadSnapshot.fresh(agent: agent, runs: [activeRun]);
+        });
+        return ThreadBloc(
+          repository: repository,
+          draftStore: draftStore,
+          agentId: 'bc-1',
+          pollInterval: const Duration(milliseconds: 15),
+          reconnectDelay: const Duration(milliseconds: 15),
+          onUnauthorized: () {
+            unauthorizedCalled = true;
+          },
+        );
+      },
+      act: (bloc) async {
+        bloc.add(const ThreadRefreshed());
+        await Future<void>.delayed(Duration.zero);
+        sseController.addError(const UnauthorizedException('API key rejected'));
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      },
+      verify: (bloc) {
+        verify(
+          () => repository.streamRun('bc-1', 'run-active', lastEventId: null),
+        ).called(1);
+        expect(bloc.state.status, ThreadStatus.failure);
+        expect(bloc.state.message, 'API key rejected');
+        expect(bloc.state.isLatestRunActive, isFalse);
+        expect(unauthorizedCalled, isTrue);
+      },
+    );
+
+    blocTest<ThreadBloc, ThreadState>(
+      'shows rate-limit retry message and reconnects with backoff',
+      build: () {
+        when(() => repository.load('bc-1')).thenAnswer((_) async {
+          return ThreadSnapshot.fresh(agent: agent, runs: [activeRun]);
+        });
+        return ThreadBloc(
+          repository: repository,
+          draftStore: draftStore,
+          agentId: 'bc-1',
+          pollInterval: const Duration(milliseconds: 15),
+          reconnectDelay: const Duration(milliseconds: 5),
+          maxReconnectDelay: const Duration(milliseconds: 20),
+        );
+      },
+      act: (bloc) async {
+        bloc.add(const ThreadRefreshed());
+        await Future<void>.delayed(Duration.zero);
+        sseController.addError(const RateLimitedException());
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+      },
+      verify: (bloc) {
+        expect(bloc.state.actionMessage, 'Rate limited, retrying stream...');
+        verify(
+          () => repository.streamRun('bc-1', 'run-active', lastEventId: null),
+        ).called(greaterThanOrEqualTo(2));
+      },
+    );
+
+    blocTest<ThreadBloc, ThreadState>(
+      'clears Last-Event-ID and reconnects once for invalid resume id',
+      build: () {
+        when(() => repository.load('bc-1')).thenAnswer((_) async {
+          return ThreadSnapshot.fresh(agent: agent, runs: [activeRun]);
+        });
+        return ThreadBloc(
+          repository: repository,
+          draftStore: draftStore,
+          agentId: 'bc-1',
+          pollInterval: const Duration(milliseconds: 15),
+          reconnectDelay: const Duration(milliseconds: 5),
+          maxReconnectDelay: const Duration(milliseconds: 20),
+        );
+      },
+      act: (bloc) async {
+        bloc.add(const ThreadRefreshed());
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(
+          const SseEvent(event: 'assistant', data: 'partial', id: '5'),
+        );
+        await Future<void>.delayed(Duration.zero);
+        sseController.addError(
+          const ApiException('invalid_last_event_id', statusCode: 400),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+      },
+      verify: (bloc) {
+        expect(
+          bloc.state.actionMessage,
+          'Stream resume expired. Reconnecting from latest events.',
+        );
+        verify(
+          () => repository.streamRun('bc-1', 'run-active', lastEventId: null),
+        ).called(2);
+        verifyNever(
+          () => repository.streamRun('bc-1', 'run-active', lastEventId: '5'),
+        );
       },
     );
 

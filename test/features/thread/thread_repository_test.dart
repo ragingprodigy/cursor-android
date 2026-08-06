@@ -3,6 +3,7 @@ import 'package:cursor/core/error/app_exception.dart';
 import 'package:cursor/core/network/cursor_api_client.dart';
 import 'package:cursor/core/network/sse_client.dart';
 import 'package:cursor/features/thread/data/run_prompt_store.dart';
+import 'package:cursor/features/thread/data/run_result_store.dart';
 import 'package:cursor/features/thread/data/thread_repository.dart';
 import 'package:cursor/features/thread/domain/thread_message.dart';
 import 'package:dio/dio.dart';
@@ -65,6 +66,25 @@ void main() {
             },
           );
         }
+        if (options.path == '/v1/agents/bc-1/runs/run-1') {
+          return ResponseBody.fromString(
+            '''
+          {
+            "run": {
+              "id": "run-1",
+              "status": "completed",
+              "prompt": {"text": "Build the app"},
+              "result": {"text": "Implemented the app"},
+              "createdAt": "2026-08-01T10:05:00.000Z"
+            }
+          }
+          ''',
+            200,
+            headers: {
+              Headers.contentTypeHeader: ['application/json'],
+            },
+          );
+        }
         return ResponseBody.fromString(
           '''
         {
@@ -73,7 +93,6 @@ void main() {
               "id": "run-1",
               "status": "completed",
               "prompt": {"text": "Build the app"},
-              "result": {"text": "Implemented the app"},
               "createdAt": "2026-08-01T10:05:00.000Z"
             },
             {
@@ -95,11 +114,16 @@ void main() {
         apiClient: CursorApiClient(dio),
         database: database,
         sseClient: SseClient(dio),
+        runResultStore: RunResultStore(database.runResultsDao),
       );
 
       final snapshot = await repository.load('bc-1');
 
-      expect(seenPaths, ['/v1/agents/bc-1', '/v1/agents/bc-1/runs']);
+      expect(seenPaths, [
+        '/v1/agents/bc-1',
+        '/v1/agents/bc-1/runs',
+        '/v1/agents/bc-1/runs/run-1',
+      ]);
       expect(snapshot.agent!.name, 'Ship Android app');
       expect(snapshot.messages, hasLength(3));
       expect(snapshot.messages.whereType<AssistantMessage>(), hasLength(1));
@@ -108,6 +132,8 @@ void main() {
       final row = await database.threadSnapshotsDao.getByAgentId('bc-1');
       expect(row, isNotNull);
       expect(row!.json, contains('"runs"'));
+      final result = await database.runResultsDao.getByRunId('bc-1', 'run-1');
+      expect(result!.content, 'Implemented the app');
     },
   );
 
@@ -261,6 +287,24 @@ void main() {
           },
         );
       }
+      if (options.path == '/v1/agents/bc-1/runs/run-1') {
+        return ResponseBody.fromString(
+          '''
+        {
+          "run": {
+            "id": "run-1",
+            "status": "completed",
+            "resultText": "Done",
+            "createdAt": "2026-08-01T10:05:00.000Z"
+          }
+        }
+        ''',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      }
       return ResponseBody.fromString(
         '''
         {
@@ -268,7 +312,6 @@ void main() {
             {
               "id": "run-1",
               "status": "completed",
-              "resultText": "Done",
               "createdAt": "2026-08-01T10:05:00.000Z"
             }
           ]
@@ -285,6 +328,7 @@ void main() {
       database: database,
       sseClient: SseClient(dio),
       runPromptStore: store,
+      runResultStore: RunResultStore(database.runResultsDao),
     );
 
     final snapshot = await repository.load('bc-1');
@@ -352,6 +396,119 @@ void main() {
     );
   });
 
+  test(
+    'load merges stored run results when API list omits result text',
+    () async {
+      final resultStore = RunResultStore(database.runResultsDao);
+      await resultStore.saveResult(
+        agentId: 'bc-1',
+        runId: 'run-1',
+        text: 'Persisted result',
+      );
+      final seenPaths = <String>[];
+      final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+      dio.httpClientAdapter = _Adapter((options) async {
+        seenPaths.add(options.path);
+        if (options.path == '/v1/agents/bc-1') {
+          return ResponseBody.fromString(
+            '{"agent":{"id":"bc-1","name":"Agent","status":"completed"}}',
+            200,
+            headers: {
+              Headers.contentTypeHeader: ['application/json'],
+            },
+          );
+        }
+        return ResponseBody.fromString(
+          '''
+        {
+          "items": [
+            {
+              "id": "run-1",
+              "status": "completed",
+              "promptText": "Prompt",
+              "createdAt": "2026-08-01T10:05:00.000Z"
+            }
+          ]
+        }
+        ''',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      });
+      final repository = ThreadRepository(
+        apiClient: CursorApiClient(dio),
+        database: database,
+        sseClient: SseClient(dio),
+        runResultStore: resultStore,
+      );
+
+      final snapshot = await repository.load('bc-1');
+
+      expect(seenPaths, ['/v1/agents/bc-1', '/v1/agents/bc-1/runs']);
+      expect(
+        snapshot.messages.whereType<AssistantMessage>().single.text,
+        'Persisted result',
+      );
+    },
+  );
+
+  test('cached snapshot reload merges stored run result', () async {
+    final resultStore = RunResultStore(database.runResultsDao);
+    await resultStore.saveResult(
+      agentId: 'bc-cached',
+      runId: 'run-cached',
+      text: 'Stored cached result',
+    );
+    await database.threadSnapshotsDao.upsert(
+      ThreadSnapshotsCompanion.insert(
+        agentId: 'bc-cached',
+        json: '''
+        {
+          "agent": {
+            "id": "bc-cached",
+            "name": "Cached agent",
+            "status": "completed",
+            "createdAt": "2026-08-01T10:00:00.000Z",
+            "updatedAt": "2026-08-01T10:00:00.000Z"
+          },
+          "runs": [
+            {
+              "id": "run-cached",
+              "status": "completed",
+              "promptText": "Cached prompt",
+              "createdAt": "2026-08-01T10:05:00.000Z"
+            }
+          ]
+        }
+        ''',
+        cachedAt: DateTime.utc(2026, 8, 1, 11),
+      ),
+    );
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      throw DioException(
+        requestOptions: options,
+        type: DioExceptionType.connectionError,
+      );
+    });
+    final repository = ThreadRepository(
+      apiClient: CursorApiClient(dio),
+      database: database,
+      sseClient: SseClient(dio),
+      runResultStore: resultStore,
+    );
+
+    final snapshot = await repository.load('bc-cached');
+
+    expect(snapshot.isStale, isTrue);
+    expect(
+      snapshot.messages.whereType<AssistantMessage>().single.text,
+      'Stored cached result',
+    );
+  });
+
   test('cancelRun posts to the cancel endpoint', () async {
     RequestOptions? seen;
     final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
@@ -406,14 +563,21 @@ void main() {
     );
   });
 
-  test('loadRun fetches a single run by id', () async {
+  test('loadRun fetches a single run by id and persists result text', () async {
     RequestOptions? seen;
     final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
     dio.httpClientAdapter = _Adapter((options) async {
       seen = options;
       return ResponseBody.fromString(
         '''
-        { "run": { "id": "run-1", "status": "RUNNING", "createdAt": "2026-08-05T12:00:00.000Z" } }
+        {
+          "run": {
+            "id": "run-1",
+            "status": "completed",
+            "result": {"text": "Finished from get run"},
+            "createdAt": "2026-08-05T12:00:00.000Z"
+          }
+        }
         ''',
         200,
         headers: {
@@ -425,12 +589,15 @@ void main() {
       apiClient: CursorApiClient(dio),
       database: database,
       sseClient: SseClient(dio),
+      runResultStore: RunResultStore(database.runResultsDao),
     );
 
     final run = await repository.loadRun('bc-1', 'run-1');
+    final result = await database.runResultsDao.getByRunId('bc-1', 'run-1');
 
     expect(seen!.path, '/v1/agents/bc-1/runs/run-1');
-    expect(run.status, 'RUNNING');
+    expect(run.status, 'completed');
+    expect(result!.content, 'Finished from get run');
   });
 
   test('streamRun delegates to the SSE client with the run path', () async {

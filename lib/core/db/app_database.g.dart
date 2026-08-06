@@ -54,6 +54,18 @@ class RunPromptsDaoManager {
       $$RunPromptsTableTableManager(_db.attachedDatabase, _db.runPrompts);
 }
 
+mixin _$RunResultsDaoMixin on DatabaseAccessor<AppDatabase> {
+  $RunResultsTable get runResults => attachedDatabase.runResults;
+  RunResultsDaoManager get managers => RunResultsDaoManager(this);
+}
+
+class RunResultsDaoManager {
+  final _$RunResultsDaoMixin _db;
+  RunResultsDaoManager(this._db);
+  $$RunResultsTableTableManager get runResults =>
+      $$RunResultsTableTableManager(_db.attachedDatabase, _db.runResults);
+}
+
 class $AgentsTable extends Agents with TableInfo<$AgentsTable, AgentCacheRow> {
   @override
   final GeneratedDatabase attachedDatabase;
@@ -1608,6 +1620,319 @@ class RunPromptsCompanion extends UpdateCompanion<RunPromptRow> {
   }
 }
 
+class $RunResultsTable extends RunResults
+    with TableInfo<$RunResultsTable, RunResultRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $RunResultsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _agentIdMeta = const VerificationMeta(
+    'agentId',
+  );
+  @override
+  late final GeneratedColumn<String> agentId = GeneratedColumn<String>(
+    'agent_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _runIdMeta = const VerificationMeta('runId');
+  @override
+  late final GeneratedColumn<String> runId = GeneratedColumn<String>(
+    'run_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _contentMeta = const VerificationMeta(
+    'content',
+  );
+  @override
+  late final GeneratedColumn<String> content = GeneratedColumn<String>(
+    'text',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [agentId, runId, content, createdAt];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'run_results';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<RunResultRow> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('agent_id')) {
+      context.handle(
+        _agentIdMeta,
+        agentId.isAcceptableOrUnknown(data['agent_id']!, _agentIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_agentIdMeta);
+    }
+    if (data.containsKey('run_id')) {
+      context.handle(
+        _runIdMeta,
+        runId.isAcceptableOrUnknown(data['run_id']!, _runIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_runIdMeta);
+    }
+    if (data.containsKey('text')) {
+      context.handle(
+        _contentMeta,
+        content.isAcceptableOrUnknown(data['text']!, _contentMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_contentMeta);
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {agentId, runId};
+  @override
+  RunResultRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return RunResultRow(
+      agentId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}agent_id'],
+      )!,
+      runId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}run_id'],
+      )!,
+      content: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}text'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+    );
+  }
+
+  @override
+  $RunResultsTable createAlias(String alias) {
+    return $RunResultsTable(attachedDatabase, alias);
+  }
+}
+
+class RunResultRow extends DataClass implements Insertable<RunResultRow> {
+  final String agentId;
+  final String runId;
+  final String content;
+  final DateTime createdAt;
+  const RunResultRow({
+    required this.agentId,
+    required this.runId,
+    required this.content,
+    required this.createdAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['agent_id'] = Variable<String>(agentId);
+    map['run_id'] = Variable<String>(runId);
+    map['text'] = Variable<String>(content);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    return map;
+  }
+
+  RunResultsCompanion toCompanion(bool nullToAbsent) {
+    return RunResultsCompanion(
+      agentId: Value(agentId),
+      runId: Value(runId),
+      content: Value(content),
+      createdAt: Value(createdAt),
+    );
+  }
+
+  factory RunResultRow.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return RunResultRow(
+      agentId: serializer.fromJson<String>(json['agentId']),
+      runId: serializer.fromJson<String>(json['runId']),
+      content: serializer.fromJson<String>(json['content']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'agentId': serializer.toJson<String>(agentId),
+      'runId': serializer.toJson<String>(runId),
+      'content': serializer.toJson<String>(content),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+    };
+  }
+
+  RunResultRow copyWith({
+    String? agentId,
+    String? runId,
+    String? content,
+    DateTime? createdAt,
+  }) => RunResultRow(
+    agentId: agentId ?? this.agentId,
+    runId: runId ?? this.runId,
+    content: content ?? this.content,
+    createdAt: createdAt ?? this.createdAt,
+  );
+  RunResultRow copyWithCompanion(RunResultsCompanion data) {
+    return RunResultRow(
+      agentId: data.agentId.present ? data.agentId.value : this.agentId,
+      runId: data.runId.present ? data.runId.value : this.runId,
+      content: data.content.present ? data.content.value : this.content,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('RunResultRow(')
+          ..write('agentId: $agentId, ')
+          ..write('runId: $runId, ')
+          ..write('content: $content, ')
+          ..write('createdAt: $createdAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(agentId, runId, content, createdAt);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is RunResultRow &&
+          other.agentId == this.agentId &&
+          other.runId == this.runId &&
+          other.content == this.content &&
+          other.createdAt == this.createdAt);
+}
+
+class RunResultsCompanion extends UpdateCompanion<RunResultRow> {
+  final Value<String> agentId;
+  final Value<String> runId;
+  final Value<String> content;
+  final Value<DateTime> createdAt;
+  final Value<int> rowid;
+  const RunResultsCompanion({
+    this.agentId = const Value.absent(),
+    this.runId = const Value.absent(),
+    this.content = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  RunResultsCompanion.insert({
+    required String agentId,
+    required String runId,
+    required String content,
+    required DateTime createdAt,
+    this.rowid = const Value.absent(),
+  }) : agentId = Value(agentId),
+       runId = Value(runId),
+       content = Value(content),
+       createdAt = Value(createdAt);
+  static Insertable<RunResultRow> custom({
+    Expression<String>? agentId,
+    Expression<String>? runId,
+    Expression<String>? content,
+    Expression<DateTime>? createdAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (agentId != null) 'agent_id': agentId,
+      if (runId != null) 'run_id': runId,
+      if (content != null) 'text': content,
+      if (createdAt != null) 'created_at': createdAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  RunResultsCompanion copyWith({
+    Value<String>? agentId,
+    Value<String>? runId,
+    Value<String>? content,
+    Value<DateTime>? createdAt,
+    Value<int>? rowid,
+  }) {
+    return RunResultsCompanion(
+      agentId: agentId ?? this.agentId,
+      runId: runId ?? this.runId,
+      content: content ?? this.content,
+      createdAt: createdAt ?? this.createdAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (agentId.present) {
+      map['agent_id'] = Variable<String>(agentId.value);
+    }
+    if (runId.present) {
+      map['run_id'] = Variable<String>(runId.value);
+    }
+    if (content.present) {
+      map['text'] = Variable<String>(content.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('RunResultsCompanion(')
+          ..write('agentId: $agentId, ')
+          ..write('runId: $runId, ')
+          ..write('content: $content, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
@@ -1617,12 +1942,14 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   );
   late final $DraftsTable drafts = $DraftsTable(this);
   late final $RunPromptsTable runPrompts = $RunPromptsTable(this);
+  late final $RunResultsTable runResults = $RunResultsTable(this);
   late final AgentsDao agentsDao = AgentsDao(this as AppDatabase);
   late final ThreadSnapshotsDao threadSnapshotsDao = ThreadSnapshotsDao(
     this as AppDatabase,
   );
   late final DraftsDao draftsDao = DraftsDao(this as AppDatabase);
   late final RunPromptsDao runPromptsDao = RunPromptsDao(this as AppDatabase);
+  late final RunResultsDao runResultsDao = RunResultsDao(this as AppDatabase);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -1632,6 +1959,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     threadSnapshots,
     drafts,
     runPrompts,
+    runResults,
   ];
 }
 
@@ -2477,6 +2805,187 @@ typedef $$RunPromptsTableProcessedTableManager =
       RunPromptRow,
       PrefetchHooks Function()
     >;
+typedef $$RunResultsTableCreateCompanionBuilder =
+    RunResultsCompanion Function({
+      required String agentId,
+      required String runId,
+      required String content,
+      required DateTime createdAt,
+      Value<int> rowid,
+    });
+typedef $$RunResultsTableUpdateCompanionBuilder =
+    RunResultsCompanion Function({
+      Value<String> agentId,
+      Value<String> runId,
+      Value<String> content,
+      Value<DateTime> createdAt,
+      Value<int> rowid,
+    });
+
+class $$RunResultsTableFilterComposer
+    extends Composer<_$AppDatabase, $RunResultsTable> {
+  $$RunResultsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get agentId => $composableBuilder(
+    column: $table.agentId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get runId => $composableBuilder(
+    column: $table.runId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get content => $composableBuilder(
+    column: $table.content,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$RunResultsTableOrderingComposer
+    extends Composer<_$AppDatabase, $RunResultsTable> {
+  $$RunResultsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get agentId => $composableBuilder(
+    column: $table.agentId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get runId => $composableBuilder(
+    column: $table.runId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get content => $composableBuilder(
+    column: $table.content,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$RunResultsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $RunResultsTable> {
+  $$RunResultsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get agentId =>
+      $composableBuilder(column: $table.agentId, builder: (column) => column);
+
+  GeneratedColumn<String> get runId =>
+      $composableBuilder(column: $table.runId, builder: (column) => column);
+
+  GeneratedColumn<String> get content =>
+      $composableBuilder(column: $table.content, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+}
+
+class $$RunResultsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $RunResultsTable,
+          RunResultRow,
+          $$RunResultsTableFilterComposer,
+          $$RunResultsTableOrderingComposer,
+          $$RunResultsTableAnnotationComposer,
+          $$RunResultsTableCreateCompanionBuilder,
+          $$RunResultsTableUpdateCompanionBuilder,
+          (
+            RunResultRow,
+            BaseReferences<_$AppDatabase, $RunResultsTable, RunResultRow>,
+          ),
+          RunResultRow,
+          PrefetchHooks Function()
+        > {
+  $$RunResultsTableTableManager(_$AppDatabase db, $RunResultsTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$RunResultsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$RunResultsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$RunResultsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> agentId = const Value.absent(),
+                Value<String> runId = const Value.absent(),
+                Value<String> content = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => RunResultsCompanion(
+                agentId: agentId,
+                runId: runId,
+                content: content,
+                createdAt: createdAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String agentId,
+                required String runId,
+                required String content,
+                required DateTime createdAt,
+                Value<int> rowid = const Value.absent(),
+              }) => RunResultsCompanion.insert(
+                agentId: agentId,
+                runId: runId,
+                content: content,
+                createdAt: createdAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$RunResultsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $RunResultsTable,
+      RunResultRow,
+      $$RunResultsTableFilterComposer,
+      $$RunResultsTableOrderingComposer,
+      $$RunResultsTableAnnotationComposer,
+      $$RunResultsTableCreateCompanionBuilder,
+      $$RunResultsTableUpdateCompanionBuilder,
+      (
+        RunResultRow,
+        BaseReferences<_$AppDatabase, $RunResultsTable, RunResultRow>,
+      ),
+      RunResultRow,
+      PrefetchHooks Function()
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -2489,4 +2998,6 @@ class $AppDatabaseManager {
       $$DraftsTableTableManager(_db, _db.drafts);
   $$RunPromptsTableTableManager get runPrompts =>
       $$RunPromptsTableTableManager(_db, _db.runPrompts);
+  $$RunResultsTableTableManager get runResults =>
+      $$RunResultsTableTableManager(_db, _db.runResults);
 }

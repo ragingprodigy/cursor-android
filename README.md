@@ -67,6 +67,10 @@ build/app/outputs/flutter-apk/app-release.apk
 
 Do not commit the APK; `/build/` is ignored by git.
 
+For the sideload demo, the release APK currently uses Flutter's generated
+debug signing configuration. Configure a production keystore before publishing
+or distributing outside trusted testers.
+
 ## Verification
 
 ```bash
@@ -79,3 +83,10 @@ flutter test
 - `lib/app/` - app shell, dependency wiring, routing, and theme
 - `lib/core/` - shared config, network, storage, database, and error handling
 - `lib/features/` - auth, agents, launch, thread, and settings feature modules
+
+## Current limitations
+
+- The public Cursor API does not return user prompt text for existing agent
+  runs. This app stores prompts created on the local device; runs created
+  elsewhere show `(Prompt unavailable on this device)` instead of a blank user
+  bubble.

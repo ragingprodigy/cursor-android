@@ -58,6 +58,17 @@ class RunPrompts extends Table {
   Set<Column<Object>> get primaryKey => {agentId, runId};
 }
 
+@DataClassName('RunResultRow')
+class RunResults extends Table {
+  TextColumn get agentId => text()();
+  TextColumn get runId => text()();
+  TextColumn get content => text().named('text')();
+  DateTimeColumn get createdAt => dateTime()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {agentId, runId};
+}
+
 @DriftAccessor(tables: [Agents])
 class AgentsDao extends DatabaseAccessor<AppDatabase> with _$AgentsDaoMixin {
   AgentsDao(super.db);
@@ -172,6 +183,14 @@ class RunPromptsDao extends DatabaseAccessor<AppDatabase>
     return into(runPrompts).insertOnConflictUpdate(row);
   }
 
+  Future<int> deleteByRunId(String agentId, String runId) {
+    return (delete(runPrompts)..where(
+          (prompt) =>
+              prompt.agentId.equals(agentId) & prompt.runId.equals(runId),
+        ))
+        .go();
+  }
+
   Future<int> deleteByAgentId(String agentId) {
     return (delete(
       runPrompts,
@@ -179,9 +198,46 @@ class RunPromptsDao extends DatabaseAccessor<AppDatabase>
   }
 }
 
+@DriftAccessor(tables: [RunResults])
+class RunResultsDao extends DatabaseAccessor<AppDatabase>
+    with _$RunResultsDaoMixin {
+  RunResultsDao(super.db);
+
+  Future<List<RunResultRow>> getByAgentId(String agentId) {
+    return (select(runResults)
+          ..where((result) => result.agentId.equals(agentId))
+          ..orderBy([(result) => OrderingTerm.asc(result.createdAt)]))
+        .get();
+  }
+
+  Future<RunResultRow?> getByRunId(String agentId, String runId) {
+    return (select(runResults)..where(
+          (result) =>
+              result.agentId.equals(agentId) & result.runId.equals(runId),
+        ))
+        .getSingleOrNull();
+  }
+
+  Future<void> upsert(RunResultsCompanion row) {
+    return into(runResults).insertOnConflictUpdate(row);
+  }
+
+  Future<int> deleteByAgentId(String agentId) {
+    return (delete(
+      runResults,
+    )..where((result) => result.agentId.equals(agentId))).go();
+  }
+}
+
 @DriftDatabase(
-  tables: [Agents, ThreadSnapshots, Drafts, RunPrompts],
-  daos: [AgentsDao, ThreadSnapshotsDao, DraftsDao, RunPromptsDao],
+  tables: [Agents, ThreadSnapshots, Drafts, RunPrompts, RunResults],
+  daos: [
+    AgentsDao,
+    ThreadSnapshotsDao,
+    DraftsDao,
+    RunPromptsDao,
+    RunResultsDao,
+  ],
 )
 class AppDatabase extends _$AppDatabase {
   AppDatabase(super.executor);
@@ -191,7 +247,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.defaults() : this(_openDefaultDatabase());
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration {
@@ -199,6 +255,9 @@ class AppDatabase extends _$AppDatabase {
       onUpgrade: (migrator, from, to) async {
         if (from < 2) {
           await migrator.createTable(runPrompts);
+        }
+        if (from < 3) {
+          await migrator.createTable(runResults);
         }
       },
     );
@@ -210,6 +269,7 @@ class AppDatabase extends _$AppDatabase {
       batch.deleteAll(threadSnapshots);
       batch.deleteAll(drafts);
       batch.deleteAll(runPrompts);
+      batch.deleteAll(runResults);
     });
   }
 }

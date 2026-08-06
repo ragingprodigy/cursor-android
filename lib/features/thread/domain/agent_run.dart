@@ -27,6 +27,28 @@ class AgentRun extends Equatable {
 
   bool get isActive => activeStatuses.contains(status.toUpperCase());
 
+  AgentRun copyWith({
+    String? id,
+    String? agentId,
+    String? status,
+    String? promptText,
+    String? resultText,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+    Map<String, Object?>? payload,
+  }) {
+    return AgentRun(
+      id: id ?? this.id,
+      agentId: agentId ?? this.agentId,
+      status: status ?? this.status,
+      promptText: promptText ?? this.promptText,
+      resultText: resultText ?? this.resultText,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      payload: payload ?? this.payload,
+    );
+  }
+
   Map<String, Object?> toJson() {
     return {
       'id': id,

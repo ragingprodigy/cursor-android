@@ -92,4 +92,20 @@ void main() {
     expect(messages.first, isA<UserMessage>());
     expect((messages.first as UserMessage).text, 'Pending launch prompt');
   });
+
+  test('uses explicit placeholder when result has no available prompt', () {
+    final messages = mapRunsToMessages([
+      AgentRun(
+        id: 'run-1',
+        status: 'completed',
+        resultText: 'Done',
+        createdAt: DateTime.utc(2026, 8, 5, 10),
+      ),
+    ]);
+
+    expect(messages, hasLength(2));
+    expect(messages.first, isA<UserMessage>());
+    expect((messages.first as UserMessage).text, promptUnavailableText);
+    expect(messages.last, isA<AssistantMessage>());
+  });
 }

@@ -102,6 +102,37 @@ void main() {
   });
 
   test(
+    'createAgent deletes pending initial prompt when run id is returned',
+    () async {
+      final store = RunPromptStore(database.runPromptsDao);
+      await store.savePendingInitialPrompt(
+        agentId: 'bc-created',
+        text: 'Pending prompt',
+      );
+      final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+      dio.httpClientAdapter = _Adapter((options) async {
+        return ResponseBody.fromString(
+          '{"agent":{"id":"bc-created"},"run":{"id":"run-created"}}',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      });
+      final repository = LaunchRepository(
+        catalogRemoteSource: CatalogRemoteSource(CursorApiClient(dio)),
+        runPromptStore: store,
+      );
+
+      await repository.createAgent(const LaunchRequest(prompt: 'Real prompt'));
+
+      final prompts = await store.loadForAgent('bc-created');
+      expect(prompts.pendingInitialPrompt, isNull);
+      expect(prompts.byRunId, {'run-created': 'Real prompt'});
+    },
+  );
+
+  test(
     'createAgent saves pending initial prompt when run id is absent',
     () async {
       final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));

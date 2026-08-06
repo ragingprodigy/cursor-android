@@ -152,6 +152,57 @@ void main() {
     expect(rows.map((prompt) => prompt.runId), ['run-1']);
   });
 
+  test('upserts and reads run results by agent id', () async {
+    await db.runResultsDao.upsert(
+      RunResultsCompanion.insert(
+        agentId: 'bc-1',
+        runId: 'run-1',
+        content: 'Initial result',
+        createdAt: DateTime.utc(2026, 3, 3),
+      ),
+    );
+
+    await db.runResultsDao.upsert(
+      RunResultsCompanion.insert(
+        agentId: 'bc-1',
+        runId: 'run-1',
+        content: 'Updated result',
+        createdAt: DateTime.utc(2026, 3, 4),
+      ),
+    );
+
+    final row = await db.runResultsDao.getByRunId('bc-1', 'run-1');
+    final rows = await db.runResultsDao.getByAgentId('bc-1');
+
+    expect(row, isNotNull);
+    expect(row!.content, 'Updated result');
+    expect(rows.map((result) => result.runId), ['run-1']);
+  });
+
+  test('saving a real run prompt can delete pending initial prompt', () async {
+    await db.runPromptsDao.upsert(
+      RunPromptsCompanion.insert(
+        agentId: 'bc-1',
+        runId: '__pending_initial__',
+        content: 'Pending prompt',
+        createdAt: DateTime.utc(2026, 3, 3),
+      ),
+    );
+    await db.runPromptsDao.upsert(
+      RunPromptsCompanion.insert(
+        agentId: 'bc-1',
+        runId: 'run-1',
+        content: 'Real prompt',
+        createdAt: DateTime.utc(2026, 3, 4),
+      ),
+    );
+
+    await db.runPromptsDao.deleteByRunId('bc-1', '__pending_initial__');
+
+    final rows = await db.runPromptsDao.getByAgentId('bc-1');
+    expect(rows.map((prompt) => prompt.runId), ['run-1']);
+  });
+
   test('clears all local cache tables', () async {
     await db.agentsDao.upsertAll([
       AgentsCompanion.insert(
@@ -191,6 +242,14 @@ void main() {
         createdAt: DateTime.utc(2026, 4, 6),
       ),
     );
+    await db.runResultsDao.upsert(
+      RunResultsCompanion.insert(
+        agentId: 'bc-cache',
+        runId: 'run-cache',
+        content: 'Cached result',
+        createdAt: DateTime.utc(2026, 4, 7),
+      ),
+    );
 
     await db.clearLocalCache();
 
@@ -198,5 +257,6 @@ void main() {
     expect(await db.threadSnapshotsDao.getByAgentId('bc-cache'), isNull);
     expect(await db.draftsDao.getAll(), isEmpty);
     expect(await db.runPromptsDao.getByAgentId('bc-cache'), isEmpty);
+    expect(await db.runResultsDao.getByAgentId('bc-cache'), isEmpty);
   });
 }

@@ -1,6 +1,8 @@
 import 'package:cursor/features/thread/domain/agent_run.dart';
 import 'package:cursor/features/thread/domain/thread_message.dart';
 
+const promptUnavailableText = '(Prompt unavailable on this device)';
+
 /// Orders runs the same way the conversation is rendered: ascending by
 /// [AgentRun.createdAt], falling back to original list order on ties.
 List<AgentRun> sortRunsByCreatedAt(Iterable<AgentRun> runs) {
@@ -32,12 +34,13 @@ List<ThreadMessage> mapRunsToMessages(
         _blankToNull(run.promptText) ??
         _blankToNull(promptTextByRunId[run.id]) ??
         (indexedRun.$1 == 0 ? _blankToNull(pendingInitialPromptText) : null);
-    if (promptText != null) {
+    final resultText = _blankToNull(run.resultText);
+    if (promptText != null || resultText != null) {
       messages.add(
         UserMessage(
           id: '${run.id}:user',
           runId: run.id,
-          text: promptText,
+          text: promptText ?? promptUnavailableText,
           createdAt: run.createdAt,
         ),
       );
@@ -45,7 +48,6 @@ List<ThreadMessage> mapRunsToMessages(
 
     messages.addAll(_toolMessagesFromRun(run));
 
-    final resultText = _blankToNull(run.resultText);
     if (resultText != null) {
       messages.add(
         AssistantMessage(

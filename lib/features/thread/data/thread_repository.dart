@@ -6,6 +6,7 @@ import 'package:cursor/core/error/app_exception.dart';
 import 'package:cursor/core/network/cursor_api_client.dart';
 import 'package:cursor/core/network/sse_client.dart';
 import 'package:cursor/features/thread/data/run_prompt_store.dart';
+import 'package:cursor/features/thread/data/run_result_store.dart';
 import 'package:cursor/features/thread/data/thread_message_mapper.dart';
 import 'package:cursor/features/thread/domain/agent_detail.dart';
 import 'package:cursor/features/thread/domain/agent_run.dart';
@@ -91,19 +92,24 @@ class ThreadRepository {
     required AppDatabase database,
     required SseClient sseClient,
     RunPromptStore? runPromptStore,
-  }) : this._(apiClient, database, sseClient, runPromptStore);
+    RunResultStore? runResultStore,
+  }) : this._(apiClient, database, sseClient, runPromptStore, runResultStore);
 
   ThreadRepository._(
     this._apiClient,
     this._database,
     this._sseClient,
     this._runPromptStore,
+    this._runResultStore,
   );
 
   final CursorApiClient _apiClient;
   final AppDatabase _database;
   final SseClient _sseClient;
   final RunPromptStore? _runPromptStore;
+  final RunResultStore? _runResultStore;
+
+  static const _runFetchConcurrency = 4;
 
   Stream<ThreadSnapshot> watchCache(String agentId) {
     return _database.threadSnapshotsDao.watchByAgentId(agentId).asyncMap((
@@ -127,7 +133,8 @@ class ThreadRepository {
         '/v1/agents/$encodedAgentId/runs',
         queryParameters: const {'limit': 50},
       );
-      final runs = _parseRunsPayload(runsResponse.data, agentId: agentId);
+      final listedRuns = _parseRunsPayload(runsResponse.data, agentId: agentId);
+      final runs = await _enrichTerminalRunResults(agentId, listedRuns);
       final cachedAt = DateTime.now().toUtc();
 
       await _database.threadSnapshotsDao.upsert(
@@ -171,7 +178,9 @@ class ThreadRepository {
     final response = await _apiClient.get<Map<String, dynamic>>(
       '/v1/agents/$encodedAgentId/runs/$encodedRunId',
     );
-    return _runFromResponse(response.data, agentId: agentId);
+    final run = _runFromResponse(response.data, agentId: agentId);
+    await _saveRunResultIfPresent(run);
+    return run;
   }
 
   Future<AgentRun> sendFollowUp(String agentId, String text) async {
@@ -193,6 +202,14 @@ class ThreadRepository {
     await _apiClient.post<Map<String, dynamic>>(
       '/v1/agents/$encodedAgentId/runs/$encodedRunId/cancel',
     );
+  }
+
+  Future<void> saveRunResult({
+    required String agentId,
+    required String runId,
+    required String text,
+  }) async {
+    await _saveRunResult(agentId: agentId, runId: runId, text: text);
   }
 
   AgentRun _runFromResponse(Object? data, {required String agentId}) {
@@ -226,7 +243,8 @@ class ThreadRepository {
       final agent = agentJson is Map
           ? _agentFromJson(_stringKeyedMap(agentJson), fallbackId: row.agentId)
           : null;
-      final runs = _runsFromItems(payload['runs'], agentId: row.agentId);
+      final cachedRuns = _runsFromItems(payload['runs'], agentId: row.agentId);
+      final runs = await _mergeStoredRunResults(row.agentId, cachedRuns);
       final messages = await _messagesFromRuns(row.agentId, runs);
 
       if (isStale) {
@@ -283,6 +301,99 @@ class ThreadRepository {
     }
   }
 
+  Future<Map<String, String>> _loadRunResultIndex(String agentId) async {
+    final store = _runResultStore;
+    if (store == null) {
+      return const {};
+    }
+
+    try {
+      return await store.loadForAgent(agentId);
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to load saved run results.',
+        name: 'ThreadRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return const {};
+    }
+  }
+
+  Future<List<AgentRun>> _enrichTerminalRunResults(
+    String agentId,
+    List<AgentRun> listedRuns,
+  ) async {
+    final storedRuns = await _mergeStoredRunResults(agentId, listedRuns);
+    final missing = storedRuns
+        .where((run) => !run.isActive && _blankToNull(run.resultText) == null)
+        .toList(growable: false);
+    if (missing.isEmpty) {
+      return storedRuns;
+    }
+
+    final fetchedByRunId = <String, AgentRun>{};
+    for (
+      var offset = 0;
+      offset < missing.length;
+      offset += _runFetchConcurrency
+    ) {
+      final end = offset + _runFetchConcurrency > missing.length
+          ? missing.length
+          : offset + _runFetchConcurrency;
+      final chunk = missing.sublist(offset, end);
+      final fetched = await Future.wait(
+        chunk.map((run) => _tryFetchRunResult(agentId, run.id)),
+      );
+      for (final run in fetched.whereType<AgentRun>()) {
+        fetchedByRunId[run.id] = run;
+      }
+    }
+
+    if (fetchedByRunId.isEmpty) {
+      return storedRuns;
+    }
+
+    return [for (final run in storedRuns) fetchedByRunId[run.id] ?? run];
+  }
+
+  Future<AgentRun?> _tryFetchRunResult(String agentId, String runId) async {
+    try {
+      final run = await loadRun(agentId, runId);
+      return _blankToNull(run.resultText) == null ? null : run;
+    } on UnauthorizedException {
+      rethrow;
+    } on RateLimitedException {
+      rethrow;
+    } on AppException catch (error, stackTrace) {
+      developer.log(
+        'Unable to fetch terminal run result.',
+        name: 'ThreadRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return null;
+    }
+  }
+
+  Future<List<AgentRun>> _mergeStoredRunResults(
+    String agentId,
+    List<AgentRun> runs,
+  ) async {
+    final resultIndex = await _loadRunResultIndex(agentId);
+    if (resultIndex.isEmpty) {
+      return runs;
+    }
+    return [
+      for (final run in runs)
+        if (_blankToNull(run.resultText) == null &&
+            _blankToNull(resultIndex[run.id]) != null)
+          run.copyWith(resultText: resultIndex[run.id])
+        else
+          run,
+    ];
+  }
+
   Future<void> _saveRunPrompt({
     required String agentId,
     required String runId,
@@ -298,6 +409,37 @@ class ThreadRepository {
     } catch (error, stackTrace) {
       developer.log(
         'Unable to save run prompt.',
+        name: 'ThreadRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  Future<void> _saveRunResultIfPresent(AgentRun run) async {
+    final resultText = _blankToNull(run.resultText);
+    final agentId = run.agentId;
+    if (resultText == null || agentId == null) {
+      return;
+    }
+    await _saveRunResult(agentId: agentId, runId: run.id, text: resultText);
+  }
+
+  Future<void> _saveRunResult({
+    required String agentId,
+    required String runId,
+    required String text,
+  }) async {
+    final store = _runResultStore;
+    if (store == null) {
+      return;
+    }
+
+    try {
+      await store.saveResult(agentId: agentId, runId: runId, text: text);
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to save run result.',
         name: 'ThreadRepository',
         error: error,
         stackTrace: stackTrace,
@@ -494,4 +636,9 @@ class ThreadRepository {
       throw ApiException('Cursor thread item had invalid $camelCase.');
     }
   }
+}
+
+String? _blankToNull(String? value) {
+  final trimmed = value?.trim();
+  return trimmed == null || trimmed.isEmpty ? null : trimmed;
 }

@@ -23,8 +23,9 @@ class RunPromptStore {
     required String agentId,
     required String runId,
     required String text,
-  }) {
-    return _save(agentId: agentId, runId: runId, text: text);
+  }) async {
+    await _save(agentId: agentId, runId: runId, text: text);
+    await _dao.deleteByRunId(agentId, _pendingInitialRunId);
   }
 
   Future<void> savePendingInitialPrompt({
