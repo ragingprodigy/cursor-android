@@ -1,0 +1,500 @@
+import 'dart:async';
+
+import 'package:cursor/features/agents/domain/agents_list_grouping.dart';
+import 'package:cursor/features/agents/domain/agent_summary.dart';
+import 'package:cursor/features/agents/presentation/agents_bloc.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+class AgentsPage extends HookWidget {
+  const AgentsPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    useEffect(() {
+      context.read<AgentsBloc>().add(const AgentsStarted());
+      return null;
+    }, const []);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Cursor'),
+        actions: [
+          BlocBuilder<AgentsBloc, AgentsState>(
+            buildWhen: (previous, current) {
+              return previous.grouping != current.grouping;
+            },
+            builder: (context, state) {
+              return PopupMenuButton<AgentsListGrouping>(
+                tooltip: 'Group agents',
+                icon: const Icon(Icons.view_agenda_outlined),
+                initialValue: state.grouping,
+                onSelected: (grouping) {
+                  context.read<AgentsBloc>().add(
+                    AgentsGroupingChanged(grouping),
+                  );
+                },
+                itemBuilder: (context) {
+                  return [
+                    for (final grouping in AgentsListGrouping.values)
+                      PopupMenuItem(
+                        value: grouping,
+                        child: Row(
+                          children: [
+                            Icon(
+                              state.grouping == grouping
+                                  ? Icons.check
+                                  : Icons.check_box_outline_blank,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 12),
+                            Text(grouping.label),
+                          ],
+                        ),
+                      ),
+                  ];
+                },
+              );
+            },
+          ),
+          IconButton(
+            tooltip: 'Settings',
+            onPressed: () => context.push('/settings'),
+            icon: const Icon(Icons.settings_outlined),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => context.push('/agents/new'),
+        icon: const Icon(Icons.add),
+        label: const Text('New agent'),
+      ),
+      body: SafeArea(
+        child: BlocBuilder<AgentsBloc, AgentsState>(
+          builder: (context, state) {
+            return RefreshIndicator(
+              onRefresh: () => _refresh(context),
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(24, 16, 24, 96),
+                children: [
+                  const _BrandHeader(),
+                  if (state.isOffline || state.isStale) ...[
+                    const SizedBox(height: 16),
+                    _StaleBanner(isOffline: state.isOffline),
+                  ],
+                  if (state.status == AgentsStatus.failure &&
+                      state.message != null) ...[
+                    const SizedBox(height: 16),
+                    _ErrorBanner(message: state.message!),
+                  ],
+                  const SizedBox(height: 20),
+                  if (state.isLoading)
+                    const _LoadingPanel()
+                  else if (state.agents.isEmpty)
+                    _EmptyAgentsPanel(
+                      hasFailure: state.status == AgentsStatus.failure,
+                    )
+                  else
+                    _AgentsList(agents: state.agents, grouping: state.grouping),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _refresh(BuildContext context) {
+    final completer = Completer<void>();
+    context.read<AgentsBloc>().add(AgentsRefreshed(completer: completer));
+    return completer.future;
+  }
+}
+
+class _StaggeredFadeSlide extends StatelessWidget {
+  const _StaggeredFadeSlide({required this.index, required this.child});
+
+  final int index;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final durationMs = 220 + (index < 6 ? index * 35 : 210);
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: Duration(milliseconds: durationMs),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, child) {
+        return Opacity(
+          opacity: value,
+          child: Transform.translate(
+            offset: Offset(0, (1 - value) * 14),
+            child: child,
+          ),
+        );
+      },
+      child: child,
+    );
+  }
+}
+
+class _BrandHeader extends StatelessWidget {
+  const _BrandHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(Icons.bolt, color: theme.colorScheme.onPrimary),
+                ),
+                const SizedBox(width: 14),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Cursor', style: theme.textTheme.headlineLarge),
+                    Text('Cloud Agents', style: theme.textTheme.bodyMedium),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            Text(
+              'Monitor remote agents, resume work, and create new sessions '
+              'from your phone.',
+              style: theme.textTheme.bodyLarge,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StaleBanner extends StatelessWidget {
+  const _StaleBanner({required this.isOffline});
+
+  final bool isOffline;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.secondary.withValues(alpha: 0.12),
+        border: Border.all(
+          color: theme.colorScheme.secondary.withValues(alpha: 0.35),
+        ),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            isOffline ? Icons.cloud_off_outlined : Icons.history_outlined,
+            color: theme.colorScheme.secondary,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              isOffline
+                  ? 'Offline - showing cached agents.'
+                  : 'Showing cached agents while the list refreshes.',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ErrorBanner extends StatelessWidget {
+  const _ErrorBanner({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.error.withValues(alpha: 0.12),
+        border: Border.all(
+          color: theme.colorScheme.error.withValues(alpha: 0.35),
+        ),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.error_outline, color: theme.colorScheme.error),
+          const SizedBox(width: 12),
+          Expanded(child: Text(message)),
+        ],
+      ),
+    );
+  }
+}
+
+class _LoadingPanel extends StatelessWidget {
+  const _LoadingPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 56),
+      child: Center(child: CircularProgressIndicator()),
+    );
+  }
+}
+
+class _EmptyAgentsPanel extends StatelessWidget {
+  const _EmptyAgentsPanel({required this.hasFailure});
+
+  final bool hasFailure;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            Icon(
+              hasFailure ? Icons.cloud_off_outlined : Icons.smart_toy_outlined,
+              size: 42,
+              color: theme.colorScheme.primary,
+            ),
+            const SizedBox(height: 14),
+            Text(
+              hasFailure ? 'Agents unavailable' : 'No agents yet',
+              style: theme.textTheme.titleLarge,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              hasFailure
+                  ? 'Pull to refresh when your connection is back.'
+                  : 'Create your first Cursor Cloud Agent to get started.',
+              textAlign: TextAlign.center,
+            ),
+            if (!hasFailure) ...[
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                onPressed: () => context.push('/agents/new'),
+                icon: const Icon(Icons.add),
+                label: const Text('New agent'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentsList extends StatelessWidget {
+  const _AgentsList({required this.agents, required this.grouping});
+
+  final List<AgentSummary> agents;
+  final AgentsListGrouping grouping;
+
+  @override
+  Widget build(BuildContext context) {
+    final sections = groupAgents(agents, grouping);
+    final children = <Widget>[];
+    var cardIndex = 0;
+
+    for (final section in sections) {
+      if (grouping != AgentsListGrouping.flat) {
+        children.add(_SectionHeader(title: section.title));
+      }
+      for (final agent in section.agents) {
+        children.add(
+          _StaggeredFadeSlide(
+            index: cardIndex,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _AgentCard(agent: agent),
+            ),
+          ),
+        );
+        cardIndex += 1;
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: children,
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 10, 4, 10),
+      child: Text(
+        title,
+        style: theme.textTheme.titleMedium?.copyWith(
+          color: theme.colorScheme.secondary,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentCard extends StatelessWidget {
+  const _AgentCard({required this.agent});
+
+  final AgentSummary agent;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Card(
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 18,
+          vertical: 10,
+        ),
+        onTap: () => context.push('/agents/${Uri.encodeComponent(agent.id)}'),
+        title: Text(agent.name, style: theme.textTheme.titleLarge),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text('Updated ${_formatUpdatedAt(agent.updatedAt)}'),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _StatusPill(status: agent.status),
+            if (agent.url != null) ...[
+              const SizedBox(width: 4),
+              IconButton(
+                tooltip: 'Open agent on web',
+                icon: const Icon(Icons.open_in_new),
+                onPressed: () => _openAgentUrl(context, agent.url!),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = _statusColor(theme, status);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Text(
+        status,
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: color,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+
+  Color _statusColor(ThemeData theme, String status) {
+    switch (status.toLowerCase()) {
+      case 'running':
+      case 'active':
+        return theme.colorScheme.primary;
+      case 'completed':
+      case 'succeeded':
+      case 'success':
+        return Colors.greenAccent.shade400;
+      case 'failed':
+      case 'error':
+      case 'cancelled':
+        return theme.colorScheme.error;
+      case 'queued':
+      case 'pending':
+        return theme.colorScheme.secondary;
+      default:
+        return theme.colorScheme.outline;
+    }
+  }
+}
+
+String _formatUpdatedAt(DateTime value) {
+  final now = DateTime.now().toUtc();
+  final updatedAt = value.toUtc();
+  final difference = now.difference(updatedAt);
+
+  if (difference.inSeconds < 60) {
+    return 'just now';
+  }
+  if (difference.inMinutes < 60) {
+    return '${difference.inMinutes}m ago';
+  }
+  if (difference.inHours < 24) {
+    return '${difference.inHours}h ago';
+  }
+  if (difference.inDays < 7) {
+    return '${difference.inDays}d ago';
+  }
+
+  final month = updatedAt.month.toString().padLeft(2, '0');
+  final day = updatedAt.day.toString().padLeft(2, '0');
+  return '${updatedAt.year}-$month-$day';
+}
+
+Future<void> _openAgentUrl(BuildContext context, Uri url) async {
+  final launched = await launchUrl(url, mode: LaunchMode.externalApplication);
+  if (!launched && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Could not open agent on web.')),
+    );
+  }
+}
