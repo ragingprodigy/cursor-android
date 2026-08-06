@@ -89,6 +89,15 @@ class _ThreadPollTick extends ThreadEvent {
   List<Object?> get props => [runId];
 }
 
+class _ThreadStreamRefreshTick extends ThreadEvent {
+  const _ThreadStreamRefreshTick(this.runId);
+
+  final String runId;
+
+  @override
+  List<Object?> get props => [runId];
+}
+
 enum ThreadStatus { loading, cached, ready, failure }
 
 const _sentinel = Object();
@@ -335,6 +344,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     Duration pollInterval = const Duration(seconds: 3),
     Duration reconnectDelay = const Duration(seconds: 2),
     Duration maxReconnectDelay = const Duration(seconds: 60),
+    Duration streamRefreshInterval = const Duration(seconds: 20),
     int maxReconnectAttempts = 10,
     int refreshEveryReconnectFailures = 3,
     FutureOr<void> Function()? onUnauthorized,
@@ -346,6 +356,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       pollInterval,
       reconnectDelay,
       maxReconnectDelay,
+      streamRefreshInterval,
       maxReconnectAttempts,
       refreshEveryReconnectFailures,
       onUnauthorized,
@@ -359,6 +370,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     this._pollInterval,
     this._reconnectDelay,
     this._maxReconnectDelay,
+    this._streamRefreshInterval,
     this._maxReconnectAttempts,
     this._refreshEveryReconnectFailures,
     this._onUnauthorized,
@@ -372,6 +384,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     on<_ThreadStreamEvent>(_onStreamEvent);
     on<_ThreadStreamFailed>(_onStreamFailed);
     on<_ThreadPollTick>(_onPollTick);
+    on<_ThreadStreamRefreshTick>(_onStreamRefreshTick);
   }
 
   final ThreadRepository _repository;
@@ -380,6 +393,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   final Duration _pollInterval;
   final Duration _reconnectDelay;
   final Duration _maxReconnectDelay;
+  final Duration _streamRefreshInterval;
   final int _maxReconnectAttempts;
   final int _refreshEveryReconnectFailures;
   final FutureOr<void> Function()? _onUnauthorized;
@@ -388,6 +402,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   StreamSubscription<SseEvent>? _streamSubscription;
   Timer? _pollTimer;
   Timer? _reconnectTimer;
+  Timer? _streamRefreshTimer;
 
   AgentDetail? _lastAgent;
   List<ThreadMessage> _lastMessages = const [];
@@ -652,7 +667,9 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     }
 
     final sse = event.event;
-    _reconnectAttempts = 0;
+    if (_resetsReconnectAttempts(sse.event)) {
+      _reconnectAttempts = 0;
+    }
     if (sse.id != null && sse.id!.isNotEmpty) {
       _lastEventId = sse.id;
     }
@@ -810,6 +827,15 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     }
   }
 
+  void _onStreamRefreshTick(
+    _ThreadStreamRefreshTick event,
+    Emitter<ThreadState> emit,
+  ) {
+    if (event.runId == _streamingRunId) {
+      add(const ThreadRefreshed());
+    }
+  }
+
   void _syncStreamForLatestRun(AgentRun? latestRun) {
     final isActive = latestRun?.isActive ?? false;
     if (!isActive) {
@@ -827,6 +853,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _streamingRunId = runId;
     _reconnectAttempts = 0;
     _retriedInvalidLastEventId = false;
+    _startStreamRefreshTimer(runId);
     _attachStream(runId);
   }
 
@@ -842,6 +869,18 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           onDone: () => add(_ThreadStreamFailed(runId, null)),
           cancelOnError: true,
         );
+  }
+
+  void _startStreamRefreshTimer(String runId) {
+    _streamRefreshTimer?.cancel();
+    if (_streamRefreshInterval <= Duration.zero) {
+      return;
+    }
+    _streamRefreshTimer = Timer.periodic(_streamRefreshInterval, (_) {
+      if (_streamingRunId == runId) {
+        add(_ThreadStreamRefreshTick(runId));
+      }
+    });
   }
 
   void _startPolling(String runId) {
@@ -880,6 +919,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _pollTimer = null;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+    _streamRefreshTimer?.cancel();
+    _streamRefreshTimer = null;
     _streamingRunId = null;
     _lastEventId = null;
     _reconnectAttempts = 0;
@@ -897,6 +938,13 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       }
     }
     return Duration(milliseconds: milliseconds);
+  }
+
+  bool _resetsReconnectAttempts(String event) {
+    return switch (event) {
+      'assistant' || 'tool_call' || 'result' => true,
+      _ => false,
+    };
   }
 
   ThreadState _clearLiveOverlay(ThreadState base) {
@@ -1131,6 +1179,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     await _streamSubscription?.cancel();
     _pollTimer?.cancel();
     _reconnectTimer?.cancel();
+    _streamRefreshTimer?.cancel();
     return super.close();
   }
 }

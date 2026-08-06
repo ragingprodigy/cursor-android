@@ -836,6 +836,75 @@ void main() {
       },
     );
 
+    late List<StreamController<SseEvent>> reconnectControllers;
+    late int streamRefreshLoadCount;
+    blocTest<ThreadBloc, ThreadState>(
+      'status-only reconnect cycles count toward the max attempts cap',
+      setUp: () {
+        reconnectControllers = [];
+        streamRefreshLoadCount = 0;
+      },
+      build: () {
+        when(() => repository.load('bc-1')).thenAnswer((_) async {
+          streamRefreshLoadCount++;
+          return ThreadSnapshot.fresh(agent: agent, runs: [activeRun]);
+        });
+        when(
+          () => repository.streamRun(
+            any(),
+            any(),
+            lastEventId: any(named: 'lastEventId'),
+          ),
+        ).thenAnswer((_) {
+          final controller = StreamController<SseEvent>();
+          reconnectControllers.add(controller);
+          return controller.stream;
+        });
+        return ThreadBloc(
+          repository: repository,
+          draftStore: draftStore,
+          agentId: 'bc-1',
+          reconnectDelay: const Duration(milliseconds: 1),
+          maxReconnectDelay: const Duration(milliseconds: 2),
+          streamRefreshInterval: const Duration(milliseconds: 5),
+          maxReconnectAttempts: 3,
+          refreshEveryReconnectFailures: 0,
+        );
+      },
+      act: (bloc) async {
+        bloc.add(const ThreadRefreshed());
+        await Future<void>.delayed(Duration.zero);
+
+        for (var i = 0; i < 4; i += 1) {
+          final controller = reconnectControllers[i];
+          controller.add(
+            const SseEvent(event: 'status', data: '{"status":"RUNNING"}'),
+          );
+          await Future<void>.delayed(Duration.zero);
+          await controller.close();
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+      },
+      verify: (bloc) {
+        expect(
+          bloc.state.actionMessage,
+          'Stream disconnected. Pull to refresh for the latest run status.',
+        );
+        expect(bloc.state.isLatestRunActive, isFalse);
+        expect(streamRefreshLoadCount, greaterThanOrEqualTo(2));
+        verify(
+          () => repository.streamRun('bc-1', 'run-active', lastEventId: null),
+        ).called(4);
+      },
+      tearDown: () async {
+        for (final controller in reconnectControllers) {
+          if (!controller.isClosed) {
+            await controller.close();
+          }
+        }
+      },
+    );
+
     var unauthorizedCalled = false;
     blocTest<ThreadBloc, ThreadState>(
       'stops reconnecting and invokes unauthorized callback on 401',
