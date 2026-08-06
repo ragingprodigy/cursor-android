@@ -13,11 +13,16 @@ import 'package:cursor/features/launch/data/catalog_remote_source.dart';
 import 'package:cursor/features/launch/data/launch_draft_store.dart';
 import 'package:cursor/features/launch/data/launch_repository.dart';
 import 'package:cursor/features/launch/presentation/launch_bloc.dart';
+import 'package:cursor/features/models/data/models_repository.dart';
 import 'package:cursor/features/thread/data/follow_up_draft_store.dart';
+import 'package:cursor/features/thread/data/follow_up_model_store.dart';
 import 'package:cursor/features/thread/data/run_prompt_store.dart';
 import 'package:cursor/features/thread/data/run_result_store.dart';
+import 'package:cursor/features/thread/data/run_thinking_store.dart';
 import 'package:cursor/features/thread/data/thread_repository.dart';
 import 'package:cursor/features/thread/presentation/thread_bloc.dart';
+import 'package:cursor/features/usage/data/usage_repository.dart';
+import 'package:cursor/features/usage/presentation/usage_bloc.dart';
 import 'package:dio/dio.dart';
 
 class AppDependencies {
@@ -66,6 +71,7 @@ class AppDependencies {
     sseClient: sseClient,
     runPromptStore: runPromptStore,
     runResultStore: runResultStore,
+    runThinkingStore: runThinkingStore,
     onUnauthorized: authSession.signOut,
   );
   late final FollowUpDraftStore followUpDraftStore = FollowUpDraftStore(
@@ -77,8 +83,17 @@ class AppDependencies {
   late final RunResultStore runResultStore = RunResultStore(
     database.runResultsDao,
   );
+  late final RunThinkingStore runThinkingStore = RunThinkingStore(
+    database.draftsDao,
+  );
+  late final FollowUpModelStore followUpModelStore = FollowUpModelStore(
+    database.draftsDao,
+  );
   late final CatalogRemoteSource catalogRemoteSource = CatalogRemoteSource(
     cursorApiClient,
+  );
+  late final ModelsRepository modelsRepository = ModelsRepository(
+    catalogRemoteSource,
   );
   late final LaunchDraftStore launchDraftStore = LaunchDraftStore(
     database.draftsDao,
@@ -86,6 +101,11 @@ class AppDependencies {
   late final LaunchRepository launchRepository = LaunchRepository(
     catalogRemoteSource: catalogRemoteSource,
     runPromptStore: runPromptStore,
+  );
+  late final UsageRepository usageRepository = UsageRepository(
+    apiClient: cursorApiClient,
+    database: database,
+    loadAgentUsage: threadRepository.loadAgentUsage,
   );
   late final AuthSessionRepository authSession =
       _authSessionOverride ??
@@ -118,9 +138,15 @@ class AppDependencies {
     return ThreadBloc(
       repository: threadRepository,
       draftStore: followUpDraftStore,
+      modelsRepository: modelsRepository,
+      modelStore: followUpModelStore,
       agentId: agentId,
       onUnauthorized: authSession.signOut,
     );
+  }
+
+  UsageBloc createUsageBloc() {
+    return UsageBloc(usageRepository);
   }
 }
 

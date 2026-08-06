@@ -61,6 +61,27 @@ void main() {
     expect(messages[2], isA<AssistantMessage>());
   });
 
+  test('maps stored thinking before assistant result', () {
+    final messages = mapRunsToMessages(
+      [
+        AgentRun(
+          id: 'run-1',
+          status: 'completed',
+          promptText: 'Run tests',
+          resultText: 'Tests are green',
+          createdAt: DateTime.utc(2026, 8, 5, 10),
+        ),
+      ],
+      thinkingTextByRunId: const {'run-1': 'Checking test failures'},
+    );
+
+    expect(messages, hasLength(3));
+    expect(messages[0], isA<UserMessage>());
+    expect(messages[1], isA<ThinkingMessage>());
+    expect((messages[1] as ThinkingMessage).text, 'Checking test failures');
+    expect(messages[2], isA<AssistantMessage>());
+  });
+
   test('fills missing prompt text from stored run prompts', () {
     final messages = mapRunsToMessages(
       [

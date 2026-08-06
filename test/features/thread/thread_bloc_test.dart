@@ -71,6 +71,13 @@ void main() {
       ),
     ).thenAnswer((_) async {});
     when(
+      () => repository.saveRunThinking(
+        agentId: any(named: 'agentId'),
+        runId: any(named: 'runId'),
+        text: any(named: 'text'),
+      ),
+    ).thenAnswer((_) async {});
+    when(
       () => repository.streamRun(
         any(),
         any(),
@@ -452,6 +459,52 @@ void main() {
     );
 
     blocTest<ThreadBloc, ThreadState>(
+      'surfaces a clear message when selected model is rejected',
+      seed: () => ThreadState.ready(
+        'bc-1',
+        agent: agent,
+        messages: const [],
+        followUpDraft: 'Keep going',
+        selectedModelId: 'bad-model',
+      ),
+      build: () {
+        when(
+          () => repository.sendFollowUp(
+            'bc-1',
+            'Keep going',
+            modelId: 'bad-model',
+          ),
+        ).thenThrow(const ApiException('bad request: model', statusCode: 400));
+        return buildBloc();
+      },
+      act: (bloc) {
+        bloc.add(
+          const ThreadFollowUpSubmitted('Keep going', modelId: 'bad-model'),
+        );
+      },
+      expect: () => [
+        ThreadState.ready(
+          'bc-1',
+          agent: agent,
+          messages: const [],
+          followUpDraft: 'Keep going',
+          selectedModelId: 'bad-model',
+          isSendingFollowUp: true,
+        ),
+        ThreadState.ready(
+          'bc-1',
+          agent: agent,
+          messages: const [],
+          followUpDraft: 'Keep going',
+          selectedModelId: 'bad-model',
+          actionMessage:
+              'Cursor rejected the selected model. Choose Default or another '
+              'model, then try again. (bad request: model)',
+        ),
+      ],
+    );
+
+    blocTest<ThreadBloc, ThreadState>(
       'draft changes are persisted to the store',
       build: buildBloc,
       act: (bloc) => bloc.add(const ThreadFollowUpDraftChanged('Ship it')),
@@ -584,7 +637,7 @@ void main() {
     });
 
     blocTest<ThreadBloc, ThreadState>(
-      'applies assistant deltas and tool_call upserts, then refreshes on done',
+      'applies thinking, assistant, and tool_call deltas, then refreshes on done',
       build: () {
         var loadCount = 0;
         when(() => repository.load('bc-1')).thenAnswer((_) async {
@@ -609,6 +662,11 @@ void main() {
       act: (bloc) async {
         bloc.add(const ThreadRefreshed());
         await Future<void>.delayed(Duration.zero);
+        sseController.add(
+          const SseEvent(event: 'thinking', data: '{"text":"Planning"}'),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(bloc.state.liveThinkingText, 'Planning');
         sseController.add(const SseEvent(event: 'assistant', data: 'Hel'));
         await Future<void>.delayed(Duration.zero);
         sseController.add(const SseEvent(event: 'assistant', data: 'lo'));
@@ -643,6 +701,10 @@ void main() {
           bloc.state.displayMessages.whereType<AssistantMessage>().last.text,
           'Hello',
         );
+        expect(
+          bloc.state.displayMessages.whereType<ThinkingMessage>().last.text,
+          'Planning',
+        );
         sseController.add(const SseEvent(event: 'done', data: '{}'));
         await Future<void>.delayed(const Duration(milliseconds: 20));
       },
@@ -657,8 +719,16 @@ void main() {
             text: 'Hello',
           ),
         ).called(1);
+        verify(
+          () => repository.saveRunThinking(
+            agentId: 'bc-1',
+            runId: 'run-active',
+            text: 'Planning',
+          ),
+        ).called(1);
         expect(bloc.state.isLatestRunActive, isFalse);
         expect(bloc.state.liveAssistantText, isNull);
+        expect(bloc.state.liveThinkingText, isNull);
         expect(bloc.state.liveToolSteps, isEmpty);
         expect(
           bloc.state.messages.whereType<AssistantMessage>().last.text,
@@ -753,13 +823,83 @@ void main() {
         bloc.add(const ThreadRefreshed());
         await Future<void>.delayed(Duration.zero);
         sseController.add(
+          const SseEvent(event: 'thinking', data: '{"text":"Plan A"}'),
+        );
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(const SseEvent(event: 'assistant', data: 'Draft'));
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(
           const SseEvent(event: 'status', data: '{"status":"completed"}'),
         );
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await Future<void>.delayed(const Duration(milliseconds: 900));
       },
       verify: (bloc) {
         expect(bloc.state.isLatestRunActive, isFalse);
         expect(bloc.state.liveAssistantText, isNull);
+        verify(
+          () => repository.saveRunThinking(
+            agentId: 'bc-1',
+            runId: 'run-active',
+            text: 'Plan A',
+          ),
+        ).called(greaterThanOrEqualTo(1));
+        verify(
+          () => repository.saveRunResult(
+            agentId: 'bc-1',
+            runId: 'run-active',
+            text: 'Draft',
+          ),
+        ).called(1);
+      },
+    );
+
+    blocTest<ThreadBloc, ThreadState>(
+      'persists trailing result after terminal status before grace finalize',
+      build: () {
+        var loadCount = 0;
+        when(() => repository.load('bc-1')).thenAnswer((_) async {
+          loadCount++;
+          if (loadCount == 1) {
+            return ThreadSnapshot.fresh(agent: agent, runs: [activeRun]);
+          }
+          return ThreadSnapshot.fresh(agent: agent, runs: [completedRun]);
+        });
+        return buildBloc();
+      },
+      act: (bloc) async {
+        bloc.add(const ThreadRefreshed());
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(const SseEvent(event: 'assistant', data: 'Draft'));
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(
+          const SseEvent(event: 'thinking', data: '{"text":"Plan"}'),
+        );
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(
+          const SseEvent(event: 'status', data: '{"status":"completed"}'),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        sseController.add(
+          const SseEvent(event: 'result', data: '{"text":"Final answer"}'),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      },
+      verify: (bloc) {
+        verify(
+          () => repository.saveRunResult(
+            agentId: 'bc-1',
+            runId: 'run-active',
+            text: 'Final answer',
+          ),
+        ).called(1);
+        verifyNever(
+          () => repository.saveRunResult(
+            agentId: 'bc-1',
+            runId: 'run-active',
+            text: 'Draft',
+          ),
+        );
+        expect(bloc.state.isLatestRunActive, isFalse);
       },
     );
 

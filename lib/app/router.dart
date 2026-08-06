@@ -4,6 +4,7 @@ import 'package:cursor/features/auth/presentation/connect_page.dart';
 import 'package:cursor/features/launch/presentation/launch_page.dart';
 import 'package:cursor/features/settings/presentation/settings_page.dart';
 import 'package:cursor/features/thread/presentation/thread_page.dart';
+import 'package:cursor/features/usage/presentation/usage_page.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 
@@ -67,6 +68,15 @@ GoRouter createAppRouter(AppDependencies dependencies) {
           return SettingsPage(
             authSession: dependencies.authSession,
             database: dependencies.database,
+          );
+        },
+      ),
+      GoRoute(
+        path: '/usage',
+        builder: (context, state) {
+          return BlocProvider(
+            create: (_) => dependencies.createUsageBloc(),
+            child: const UsagePage(),
           );
         },
       ),
