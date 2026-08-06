@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.compile.JavaCompile
+
 allprojects {
     repositories {
         google()
@@ -18,34 +20,22 @@ subprojects {
 subprojects {
     project.evaluationDependsOn(":app")
 }
+
+// Silence obsolete Java 8 warnings from Android library/plugin subprojects.
+// Prefer task-level configuration (lazy) over android.compileOptions afterEvaluate —
+// evaluationDependsOn(":app") can finalize :app options before a root afterEvaluate runs.
 subprojects {
-    afterEvaluate {
-        extensions.findByName("android")?.configureJava17CompileOptions()
-        tasks.configureEach {
-            configureKotlinJvmTarget17()
-        }
+    tasks.withType<JavaCompile>().configureEach {
+        sourceCompatibility = JavaVersion.VERSION_17.toString()
+        targetCompatibility = JavaVersion.VERSION_17.toString()
+    }
+    tasks.configureEach {
+        configureKotlinJvmTarget17()
     }
 }
 
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
-}
-
-fun Any.configureJava17CompileOptions() {
-    val compileOptions = javaClass.methods
-        .firstOrNull { it.name == "getCompileOptions" && it.parameterCount == 0 }
-        ?.invoke(this)
-        ?: return
-
-    for (methodName in listOf("setSourceCompatibility", "setTargetCompatibility")) {
-        compileOptions.javaClass.methods
-            .firstOrNull {
-                it.name == methodName &&
-                    it.parameterCount == 1 &&
-                    it.parameterTypes.single().isAssignableFrom(JavaVersion::class.java)
-            }
-            ?.invoke(compileOptions, JavaVersion.VERSION_17)
-    }
 }
 
 fun Any.configureKotlinJvmTarget17() {
