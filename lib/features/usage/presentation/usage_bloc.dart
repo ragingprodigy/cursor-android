@@ -36,6 +36,10 @@ class UsageCustomRangeSelected extends UsageEvent {
   List<Object?> get props => [startDate, endDate];
 }
 
+class UsageRefreshed extends UsageEvent {
+  const UsageRefreshed();
+}
+
 enum UsagePreset { last7Days, last30Days, custom }
 
 enum UsageStatus { initial, loading, ready }
@@ -103,6 +107,7 @@ class UsageBloc extends Bloc<UsageEvent, UsageState> {
     on<UsageStarted>(_onStarted);
     on<UsagePresetSelected>(_onPresetSelected);
     on<UsageCustomRangeSelected>(_onCustomRangeSelected);
+    on<UsageRefreshed>(_onRefreshed);
   }
 
   final UsageRepository _repository;
@@ -119,6 +124,13 @@ class UsageBloc extends Bloc<UsageEvent, UsageState> {
     UsagePresetSelected event,
     Emitter<UsageState> emit,
   ) {
+    if (event.preset == UsagePreset.custom) {
+      return _load(
+        emit,
+        preset: UsagePreset.custom,
+        range: (state.startDate, state.endDate),
+      );
+    }
     final range = _rangeForPreset(event.preset);
     return _load(emit, preset: event.preset, range: range);
   }
@@ -129,6 +141,14 @@ class UsageBloc extends Bloc<UsageEvent, UsageState> {
   ) {
     final range = _clampRange(event.startDate, event.endDate);
     return _load(emit, preset: UsagePreset.custom, range: range);
+  }
+
+  Future<void> _onRefreshed(UsageRefreshed event, Emitter<UsageState> emit) {
+    return _load(
+      emit,
+      preset: state.preset,
+      range: (state.startDate, state.endDate),
+    );
   }
 
   Future<void> _load(

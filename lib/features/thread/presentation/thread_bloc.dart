@@ -843,7 +843,9 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       return false;
     }
     final message = error.message.toLowerCase();
-    return message.contains('model') || message.contains('bad request');
+    // Only treat as model rejection when the API message mentions model.
+    // Generic "Bad Request" bodies must not steal the real error copy.
+    return message.contains('model');
   }
 
   void _onCacheChanged(_ThreadCacheChanged event, Emitter<ThreadState> emit) {
@@ -1175,6 +1177,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   }
 
   void _stopStreaming() {
+    final runId = _streamingRunId;
+    final thinkingText = _blankToNull(_liveThinkingBuffer.toString());
     _streamSubscription?.cancel();
     _streamSubscription = null;
     _pollTimer?.cancel();
@@ -1190,6 +1194,17 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _liveAssistantBuffer.clear();
     _liveThinkingBuffer.clear();
     _liveToolStepsById.clear();
+    // Persist before buffers are discarded on every completion/stop path
+    // (status, poll, 410 fallback, max reconnect), not only result/done.
+    if (runId != null && thinkingText != null) {
+      unawaited(
+        _repository.saveRunThinking(
+          agentId: _agentId,
+          runId: runId,
+          text: thinkingText,
+        ),
+      );
+    }
   }
 
   Duration _reconnectBackoff(int attempt) {
@@ -1269,7 +1284,6 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   }
 
   Future<void> _persistStreamResult(String runId, String data) async {
-    await _persistStreamThinking(runId);
     final resultText =
         _extractResultText(data) ??
         _blankToNull(_liveAssistantBuffer.toString());
@@ -1280,18 +1294,6 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       agentId: _agentId,
       runId: runId,
       text: resultText,
-    );
-  }
-
-  Future<void> _persistStreamThinking(String runId) async {
-    final thinkingText = _blankToNull(_liveThinkingBuffer.toString());
-    if (thinkingText == null) {
-      return;
-    }
-    await _repository.saveRunThinking(
-      agentId: _agentId,
-      runId: runId,
-      text: thinkingText,
     );
   }
 

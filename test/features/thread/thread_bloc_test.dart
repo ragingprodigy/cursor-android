@@ -823,6 +823,10 @@ void main() {
         bloc.add(const ThreadRefreshed());
         await Future<void>.delayed(Duration.zero);
         sseController.add(
+          const SseEvent(event: 'thinking', data: '{"text":"Plan A"}'),
+        );
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(
           const SseEvent(event: 'status', data: '{"status":"completed"}'),
         );
         await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -830,6 +834,13 @@ void main() {
       verify: (bloc) {
         expect(bloc.state.isLatestRunActive, isFalse);
         expect(bloc.state.liveAssistantText, isNull);
+        verify(
+          () => repository.saveRunThinking(
+            agentId: 'bc-1',
+            runId: 'run-active',
+            text: 'Plan A',
+          ),
+        ).called(1);
       },
     );
 

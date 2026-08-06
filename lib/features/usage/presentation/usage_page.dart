@@ -22,9 +22,9 @@ class UsagePage extends HookWidget {
           builder: (context, state) {
             return RefreshIndicator(
               onRefresh: () async {
-                context.read<UsageBloc>().add(
-                  UsagePresetSelected(state.preset),
-                );
+                final bloc = context.read<UsageBloc>();
+                bloc.add(const UsageRefreshed());
+                await bloc.stream.firstWhere((next) => !next.isLoading);
               },
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),

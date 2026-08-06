@@ -45,7 +45,16 @@ void main() {
       expect(options.headers['Authorization'], startsWith('Basic '));
       if (options.path == '/teams/spend') {
         return ResponseBody.fromString(
-          '{"items":[{"overallSpendCents":125.5}]}',
+          '''
+          {
+            "teamMemberSpend": [
+              {"spendCents": 100.5, "email": "a@example.com"},
+              {"overallSpendCents": 25, "email": "b@example.com"}
+            ],
+            "totalPages": 1,
+            "totalMembers": 2
+          }
+          ''',
           200,
           headers: {
             Headers.contentTypeHeader: ['application/json'],
@@ -55,13 +64,18 @@ void main() {
       return ResponseBody.fromString(
         '''
         {
-          "items": [
+          "usageEvents": [
             {
               "chargedCents": 10,
-              "totalReadTokens": 7,
-              "totalWriteTokens": 8
+              "tokenUsage": {
+                "inputTokens": 7,
+                "outputTokens": 8,
+                "cacheReadTokens": 1,
+                "cacheWriteTokens": 2
+              }
             }
-          ]
+          ],
+          "totalPages": 1
         }
         ''',
         200,
@@ -90,7 +104,49 @@ void main() {
       'pageSize': 100,
     });
     expect(report.spend!.totalSpendCents, 125.5);
-    expect(report.events!.totalTokens, 15);
+    expect(report.spend!.userCount, 2);
+    expect(report.events!.totalTokens, 18);
+    expect(report.events!.chargedCents, 10);
+    expect(report.adminUnavailable, isFalse);
+  });
+
+  test('loadReport keeps spend when usage events fail', () async {
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    final apiClient = CursorApiClient(dio)..setApiKey('key');
+    dio.httpClientAdapter = _Adapter((options) async {
+      if (options.path == '/teams/spend') {
+        return ResponseBody.fromString(
+          '{"teamMemberSpend":[{"spendCents":40}],"totalPages":1}',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      }
+      return ResponseBody.fromString(
+        '{"message":"rate limited"}',
+        429,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = UsageRepository(
+      apiClient: apiClient,
+      database: database,
+      loadAgentUsage: (_) async => const AgentUsage(totalTokens: 99, runs: []),
+    );
+
+    final report = await repository.loadReport(
+      startDate: DateTime.utc(2026, 8, 1),
+      endDate: DateTime.utc(2026, 8, 2),
+    );
+
+    expect(report.spend!.totalSpendCents, 40);
+    expect(report.events, isNull);
+    expect(report.adminUnavailable, isFalse);
+    expect(report.message, contains('Usage events unavailable'));
+    expect(report.fallbackUsage, isNull);
   });
 
   test(
@@ -134,6 +190,7 @@ void main() {
 
       expect(report.adminUnavailable, isTrue);
       expect(report.message, contains('Enterprise Admin API key'));
+      expect(report.message, contains('not filtered to the selected date range'));
       expect(report.fallbackUsage!.totalTokens, 12);
       expect(report.fallbackAgentCount, 1);
     },

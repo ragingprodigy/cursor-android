@@ -1,4 +1,5 @@
 import 'dart:developer' as developer;
+import 'dart:math' as math;
 
 import 'package:cursor/core/db/app_database.dart';
 import 'package:cursor/core/error/app_exception.dart';
@@ -20,26 +21,29 @@ class UsageRepository {
   final Future<AgentUsage> Function(String agentId) _loadAgentUsage;
 
   static const _fallbackConcurrency = 4;
+  static const _pageSize = 100;
+  static const _maxPages = 20;
 
   Future<UsageReport> loadReport({
     required DateTime startDate,
     required DateTime endDate,
   }) async {
+    TeamSpendSummary? spend;
+    TeamUsageEventsSummary? events;
+    final warnings = <String>[];
+
     try {
-      final spend = await _loadSpend();
-      final events = await _loadUsageEvents(
-        startDate: startDate,
-        endDate: endDate,
-      );
-      return UsageReport(
-        startDate: startDate,
-        endDate: endDate,
-        spend: spend,
-        events: events,
-      );
+      final spendResult = await _loadSpend();
+      spend = spendResult.summary;
+      if (spendResult.truncated) {
+        warnings.add(
+          'Spend shows the first ${_pageSize * spendResult.pagesLoaded} '
+          'team members (more pages available).',
+        );
+      }
     } on UnauthorizedException catch (error, stackTrace) {
       developer.log(
-        'Admin usage API rejected credentials.',
+        'Admin spend API rejected credentials.',
         name: 'UsageRepository',
         error: error,
         stackTrace: stackTrace,
@@ -50,81 +54,206 @@ class UsageRepository {
         message: _adminUnavailableMessage,
       );
     } on ApiException catch (error, stackTrace) {
+      if (error.statusCode == 403) {
+        developer.log(
+          'Admin spend API forbidden.',
+          name: 'UsageRepository',
+          error: error,
+          stackTrace: stackTrace,
+        );
+        return _fallbackReport(
+          startDate: startDate,
+          endDate: endDate,
+          message: _adminUnavailableMessage,
+        );
+      }
       developer.log(
-        'Admin usage API failed.',
+        'Admin spend API failed.',
         name: 'UsageRepository',
         error: error,
         stackTrace: stackTrace,
       );
-      final message = error.statusCode == 403
-          ? _adminUnavailableMessage
-          : '${error.message} Showing best-effort cached agent usage.';
-      return _fallbackReport(
-        startDate: startDate,
-        endDate: endDate,
-        message: message,
-      );
+      warnings.add('Spend unavailable: ${error.message}');
     } on AppException catch (error, stackTrace) {
       developer.log(
-        'Usage API failed.',
+        'Admin spend API failed.',
         name: 'UsageRepository',
         error: error,
         stackTrace: stackTrace,
       );
-      return _fallbackReport(
-        startDate: startDate,
-        endDate: endDate,
-        message: '${error.message} Showing best-effort cached agent usage.',
-      );
+      warnings.add('Spend unavailable: ${error.message}');
     } catch (error, stackTrace) {
       developer.log(
-        'Unable to load usage report.',
+        'Unable to load Admin spend.',
         name: 'UsageRepository',
         error: error,
         stackTrace: stackTrace,
       );
+      warnings.add('Spend unavailable.');
+    }
+
+    try {
+      final eventsResult = await _loadUsageEvents(
+        startDate: startDate,
+        endDate: endDate,
+      );
+      events = eventsResult.summary;
+      if (eventsResult.truncated) {
+        warnings.add(
+          'Usage events show the first '
+          '${_pageSize * eventsResult.pagesLoaded} events '
+          '(more pages available).',
+        );
+      }
+    } on UnauthorizedException catch (error, stackTrace) {
+      developer.log(
+        'Admin usage-events API rejected credentials.',
+        name: 'UsageRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (spend == null) {
+        return _fallbackReport(
+          startDate: startDate,
+          endDate: endDate,
+          message: _adminUnavailableMessage,
+        );
+      }
+      warnings.add(
+        'Usage events require Admin access. Showing spend only where available.',
+      );
+    } on ApiException catch (error, stackTrace) {
+      developer.log(
+        'Admin usage-events API failed.',
+        name: 'UsageRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (error.statusCode == 403 && spend == null) {
+        return _fallbackReport(
+          startDate: startDate,
+          endDate: endDate,
+          message: _adminUnavailableMessage,
+        );
+      }
+      warnings.add('Usage events unavailable: ${error.message}');
+    } on AppException catch (error, stackTrace) {
+      developer.log(
+        'Admin usage-events API failed.',
+        name: 'UsageRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      warnings.add('Usage events unavailable: ${error.message}');
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to load Admin usage events.',
+        name: 'UsageRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      warnings.add('Usage events unavailable.');
+    }
+
+    if (spend == null && events == null) {
       return _fallbackReport(
         startDate: startDate,
         endDate: endDate,
-        message:
-            'Unable to load Admin API usage. Showing best-effort cached agent usage.',
+        message: warnings.isEmpty
+            ? 'Unable to load Admin API usage. Showing best-effort cached agent usage.'
+            : '${warnings.join(' ')} Showing best-effort cached agent usage.',
       );
     }
+
+    return UsageReport(
+      startDate: startDate,
+      endDate: endDate,
+      spend: spend,
+      events: events,
+      message: warnings.isEmpty ? null : warnings.join(' '),
+    );
   }
 
-  Future<TeamSpendSummary> _loadSpend() async {
-    final response = await _apiClient.postWithBasicAuth<Map<String, dynamic>>(
-      '/teams/spend',
-      data: const {'page': 1, 'pageSize': 100},
-    );
-    final payload = _asMap(response.data);
-    final items = _items(payload);
-    final total = items.fold<double>(0, (sum, item) {
+  Future<_PagedSpend> _loadSpend() async {
+    final members = <Object?>[];
+    var page = 1;
+    var totalPages = 1;
+    var truncated = false;
+
+    while (page <= totalPages && page <= _maxPages) {
+      final response = await _apiClient.postWithBasicAuth<Map<String, dynamic>>(
+        '/teams/spend',
+        data: {'page': page, 'pageSize': _pageSize},
+      );
+      final payload = _asMap(response.data);
+      members.addAll(_spendItems(payload));
+      totalPages = math.max(1, _intAt(payload, const ['totalPages']) ?? 1);
+      if (totalPages > _maxPages && page == _maxPages) {
+        truncated = true;
+      }
+      page += 1;
+    }
+
+    if (totalPages > _maxPages) {
+      truncated = true;
+    }
+
+    final total = members.fold<double>(0, (sum, item) {
       if (item is! Map) {
         return sum;
       }
       final map = _stringKeyedMap(item);
       return sum +
-          (_doubleAt(map, const ['overallSpendCents', 'spendCents']) ?? 0);
+          (_doubleAt(map, const [
+                'overallSpendCents',
+                'spendCents',
+                'includedSpendCents',
+              ]) ??
+              0);
     });
-    return TeamSpendSummary(totalSpendCents: total, userCount: items.length);
+
+    return _PagedSpend(
+      summary: TeamSpendSummary(
+        totalSpendCents: total,
+        userCount: members.length,
+      ),
+      pagesLoaded: page - 1,
+      truncated: truncated,
+    );
   }
 
-  Future<TeamUsageEventsSummary> _loadUsageEvents({
+  Future<_PagedEvents> _loadUsageEvents({
     required DateTime startDate,
     required DateTime endDate,
   }) async {
-    final response = await _apiClient.postWithBasicAuth<Map<String, dynamic>>(
-      '/teams/filtered-usage-events',
-      data: {
-        'startDate': startDate.toUtc().millisecondsSinceEpoch,
-        'endDate': endDate.toUtc().millisecondsSinceEpoch,
-        'page': 1,
-        'pageSize': 100,
-      },
-    );
-    final payload = _asMap(response.data);
-    final items = _items(payload);
+    final items = <Object?>[];
+    var page = 1;
+    var totalPages = 1;
+    var truncated = false;
+
+    while (page <= totalPages && page <= _maxPages) {
+      final response = await _apiClient.postWithBasicAuth<Map<String, dynamic>>(
+        '/teams/filtered-usage-events',
+        data: {
+          'startDate': startDate.toUtc().millisecondsSinceEpoch,
+          'endDate': endDate.toUtc().millisecondsSinceEpoch,
+          'page': page,
+          'pageSize': _pageSize,
+        },
+      );
+      final payload = _asMap(response.data);
+      items.addAll(_eventItems(payload));
+      totalPages = math.max(1, _intAt(payload, const ['totalPages']) ?? 1);
+      if (totalPages > _maxPages && page == _maxPages) {
+        truncated = true;
+      }
+      page += 1;
+    }
+
+    if (totalPages > _maxPages) {
+      truncated = true;
+    }
+
     var chargedCents = 0.0;
     var totalTokens = 0;
     for (final item in items) {
@@ -135,10 +264,14 @@ class UsageRepository {
       chargedCents += _doubleAt(map, const ['chargedCents', 'totalCents']) ?? 0;
       totalTokens += _tokenTotal(map);
     }
-    return TeamUsageEventsSummary(
-      eventCount: items.length,
-      chargedCents: chargedCents,
-      totalTokens: totalTokens,
+    return _PagedEvents(
+      summary: TeamUsageEventsSummary(
+        eventCount: items.length,
+        chargedCents: chargedCents,
+        totalTokens: totalTokens,
+      ),
+      pagesLoaded: page - 1,
+      truncated: truncated,
     );
   }
 
@@ -153,7 +286,7 @@ class UsageRepository {
       endDate: endDate,
       fallbackUsage: usage.$1,
       fallbackAgentCount: usage.$2,
-      message: message,
+      message: '$message $_fallbackNotRangeFilteredNote',
       adminUnavailable: true,
     );
   }
@@ -198,13 +331,22 @@ class UsageRepository {
     }
   }
 
-  List<Object?> _items(Map<String, Object?> payload) {
+  List<Object?> _spendItems(Map<String, Object?> payload) {
     final items =
+        payload['teamMemberSpend'] ??
         payload['items'] ??
         payload['data'] ??
+        payload['users'] ??
+        payload['spend'];
+    return items is List ? items : const [];
+  }
+
+  List<Object?> _eventItems(Map<String, Object?> payload) {
+    final items =
         payload['usageEvents'] ??
         payload['usage_events'] ??
-        payload['users'];
+        payload['items'] ??
+        payload['data'];
     return items is List ? items : const [];
   }
 
@@ -217,6 +359,34 @@ class UsageRepository {
     if (direct != null) {
       return direct;
     }
+
+    final nested = json['tokenUsage'];
+    if (nested is Map) {
+      final tokenUsage = _stringKeyedMap(nested);
+      final nestedTotal = _intAt(tokenUsage, const [
+        'totalTokens',
+        'total_tokens',
+        'tokens',
+      ]);
+      if (nestedTotal != null) {
+        return nestedTotal;
+      }
+      var nestedSum = 0;
+      for (final key in const [
+        'inputTokens',
+        'outputTokens',
+        'cacheReadTokens',
+        'cacheWriteTokens',
+        'totalReadTokens',
+        'totalWriteTokens',
+      ]) {
+        nestedSum += _intAt(tokenUsage, [key]) ?? 0;
+      }
+      if (nestedSum > 0) {
+        return nestedSum;
+      }
+    }
+
     var total = 0;
     for (final key in const [
       'totalReadTokens',
@@ -278,6 +448,33 @@ class UsageRepository {
   }
 }
 
+class _PagedSpend {
+  const _PagedSpend({
+    required this.summary,
+    required this.pagesLoaded,
+    required this.truncated,
+  });
+
+  final TeamSpendSummary summary;
+  final int pagesLoaded;
+  final bool truncated;
+}
+
+class _PagedEvents {
+  const _PagedEvents({
+    required this.summary,
+    required this.pagesLoaded,
+    required this.truncated,
+  });
+
+  final TeamUsageEventsSummary summary;
+  final int pagesLoaded;
+  final bool truncated;
+}
+
 const _adminUnavailableMessage =
     'Admin usage requires a Cursor Enterprise Admin API key. '
     'Showing best-effort token totals from cached agents.';
+
+const _fallbackNotRangeFilteredNote =
+    'Cached agent totals are not filtered to the selected date range.';
