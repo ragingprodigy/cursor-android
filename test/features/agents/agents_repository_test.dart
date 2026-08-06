@@ -152,7 +152,7 @@ void main() {
       repository.watchCached().map((snapshot) {
         return snapshot.agents.single.repoUrl;
       }),
-      emits('https://github.com/acme/mobile'),
+      emitsThrough('https://github.com/acme/mobile'),
     );
 
     expect(seenPaths, contains('/v1/agents/bc-1'));
