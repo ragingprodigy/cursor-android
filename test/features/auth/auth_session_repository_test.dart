@@ -174,7 +174,8 @@ void main() {
     final repository = AuthSessionRepository(
       apiClient: CursorApiClient(Dio()),
       remoteSource: _FakeAuthRemoteSource(
-        () async => const ApiKeyInfo(apiKeyName: 'key'),
+        () async =>
+            ApiKeyInfo(apiKeyName: 'key', createdAt: DateTime.utc(2026, 8, 1)),
       ),
       credentials: credentials,
       config: const AppConfig(apiBaseUrl: 'https://api.cursor.com'),
