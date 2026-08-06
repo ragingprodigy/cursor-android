@@ -2,6 +2,8 @@ import 'package:cursor/app/di.dart';
 import 'package:cursor/features/agents/presentation/agents_page.dart';
 import 'package:cursor/features/auth/presentation/connect_page.dart';
 import 'package:cursor/features/launch/presentation/launch_page.dart';
+import 'package:cursor/features/prompts/presentation/prompt_edit_page.dart';
+import 'package:cursor/features/prompts/presentation/prompt_library_page.dart';
 import 'package:cursor/features/settings/presentation/settings_page.dart';
 import 'package:cursor/features/thread/presentation/thread_page.dart';
 import 'package:cursor/features/usage/presentation/usage_page.dart';
@@ -70,6 +72,36 @@ GoRouter createAppRouter(AppDependencies dependencies) {
             database: dependencies.database,
           );
         },
+        routes: [
+          GoRoute(
+            path: 'prompts',
+            builder: (context, state) {
+              return BlocProvider(
+                create: (_) => dependencies.createPromptLibraryBloc(),
+                child: const PromptLibraryPage(),
+              );
+            },
+            routes: [
+              GoRoute(
+                path: 'new',
+                builder: (context, state) {
+                  return PromptEditPage(
+                    repository: dependencies.promptLibraryRepository,
+                  );
+                },
+              ),
+              GoRoute(
+                path: ':id',
+                builder: (context, state) {
+                  return PromptEditPage(
+                    repository: dependencies.promptLibraryRepository,
+                    promptId: state.pathParameters['id'],
+                  );
+                },
+              ),
+            ],
+          ),
+        ],
       ),
       GoRoute(
         path: '/usage',

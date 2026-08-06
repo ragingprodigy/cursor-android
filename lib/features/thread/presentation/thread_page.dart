@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:cursor/features/launch/domain/launch_catalog.dart';
+import 'package:cursor/features/prompts/data/prompt_library_repository.dart';
+import 'package:cursor/features/prompts/presentation/prompt_picker_sheet.dart';
 import 'package:cursor/features/thread/domain/agent_usage.dart';
 import 'package:cursor/features/thread/domain/thread_message.dart';
 import 'package:cursor/features/thread/presentation/thread_bloc.dart';
@@ -733,6 +735,22 @@ class _Composer extends HookWidget {
                         state.isLatestRunActive
                             ? Icons.lock_clock_outlined
                             : Icons.chat_bubble_outline,
+                      ),
+                      suffixIcon: IconButton(
+                        tooltip: 'Use saved prompt',
+                        icon: const Icon(Icons.library_books_outlined),
+                        onPressed: () async {
+                          final selected = await showPromptPickerSheet(
+                            context: context,
+                            repository: context.read<PromptLibraryRepository>(),
+                          );
+                          if (selected == null || !context.mounted) {
+                            return;
+                          }
+                          context.read<ThreadBloc>().add(
+                            ThreadFollowUpDraftChanged(selected.body),
+                          );
+                        },
                       ),
                       hintText: hint,
                       filled: true,

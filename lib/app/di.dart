@@ -14,6 +14,8 @@ import 'package:cursor/features/launch/data/launch_draft_store.dart';
 import 'package:cursor/features/launch/data/launch_repository.dart';
 import 'package:cursor/features/launch/presentation/launch_bloc.dart';
 import 'package:cursor/features/models/data/models_repository.dart';
+import 'package:cursor/features/prompts/data/prompt_library_repository.dart';
+import 'package:cursor/features/prompts/presentation/prompt_library_bloc.dart';
 import 'package:cursor/features/thread/data/follow_up_draft_store.dart';
 import 'package:cursor/features/thread/data/follow_up_model_store.dart';
 import 'package:cursor/features/thread/data/run_prompt_store.dart';
@@ -107,6 +109,8 @@ class AppDependencies {
     database: database,
     loadAgentUsage: threadRepository.loadAgentUsage,
   );
+  late final PromptLibraryRepository promptLibraryRepository =
+      PromptLibraryRepository(database.savedPromptsDao);
   late final AuthSessionRepository authSession =
       _authSessionOverride ??
       AuthSessionRepository(
@@ -147,6 +151,10 @@ class AppDependencies {
 
   UsageBloc createUsageBloc() {
     return UsageBloc(usageRepository);
+  }
+
+  PromptLibraryBloc createPromptLibraryBloc() {
+    return PromptLibraryBloc(promptLibraryRepository);
   }
 }
 
