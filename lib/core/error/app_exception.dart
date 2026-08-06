@@ -16,6 +16,7 @@ class NetworkException extends AppException {
 }
 
 class ApiException extends AppException {
-  const ApiException(super.message, {this.statusCode});
+  const ApiException(super.message, {this.statusCode, this.code});
   final int? statusCode;
+  final String? code;
 }

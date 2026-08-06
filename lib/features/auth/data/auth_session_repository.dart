@@ -12,19 +12,22 @@ class AuthSessionRepository extends ChangeNotifier {
     required AuthRemoteSource remoteSource,
     required SecureCredentialsStore credentials,
     required AppConfig config,
-  }) : this._(apiClient, remoteSource, credentials, config);
+    Future<void> Function()? clearLocalCache,
+  }) : this._(apiClient, remoteSource, credentials, config, clearLocalCache);
 
   AuthSessionRepository._(
     this._apiClient,
     this._remoteSource,
     this._credentials,
     this._config,
+    this._clearLocalCache,
   );
 
   final CursorApiClient _apiClient;
   final AuthRemoteSource _remoteSource;
   final SecureCredentialsStore _credentials;
   final AppConfig _config;
+  final Future<void> Function()? _clearLocalCache;
 
   ApiKeyInfo? _currentInfo;
   bool _hasSessionKey = false;
@@ -50,8 +53,7 @@ class AuthSessionRepository extends ChangeNotifier {
       _setSession(hasSessionKey: true, info: info);
       return info;
     } on UnauthorizedException {
-      await _credentials.clear();
-      _clearClientSession();
+      await signOut();
       return null;
     } on AppException {
       _setSession(hasSessionKey: true, info: null);
@@ -79,8 +81,12 @@ class AuthSessionRepository extends ChangeNotifier {
   }
 
   Future<void> signOut() async {
-    await _credentials.clear();
-    _clearClientSession();
+    try {
+      await _credentials.clear();
+      await _clearLocalCache?.call();
+    } finally {
+      _clearClientSession();
+    }
   }
 
   String? _normalize(String? apiKey) {

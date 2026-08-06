@@ -93,7 +93,15 @@ class ThreadRepository {
     required SseClient sseClient,
     RunPromptStore? runPromptStore,
     RunResultStore? runResultStore,
-  }) : this._(apiClient, database, sseClient, runPromptStore, runResultStore);
+    Future<void> Function()? onUnauthorized,
+  }) : this._(
+         apiClient,
+         database,
+         sseClient,
+         runPromptStore,
+         runResultStore,
+         onUnauthorized,
+       );
 
   ThreadRepository._(
     this._apiClient,
@@ -101,6 +109,7 @@ class ThreadRepository {
     this._sseClient,
     this._runPromptStore,
     this._runResultStore,
+    this._onUnauthorized,
   );
 
   final CursorApiClient _apiClient;
@@ -108,6 +117,7 @@ class ThreadRepository {
   final SseClient _sseClient;
   final RunPromptStore? _runPromptStore;
   final RunResultStore? _runResultStore;
+  final Future<void> Function()? _onUnauthorized;
 
   static const _runFetchConcurrency = 4;
 
@@ -134,25 +144,36 @@ class ThreadRepository {
         queryParameters: const {'limit': 50},
       );
       final listedRuns = _parseRunsPayload(runsResponse.data, agentId: agentId);
-      final runs = await _enrichTerminalRunResults(agentId, listedRuns);
-      final cachedAt = DateTime.now().toUtc();
-
-      await _database.threadSnapshotsDao.upsert(
-        ThreadSnapshotsCompanion.insert(
-          agentId: agentId,
-          json: jsonEncode({
-            'agent': agent.toJson(),
-            'runs': runs.map((run) => run.toJson()).toList(growable: false),
-          }),
-          cachedAt: cachedAt,
-        ),
+      await _upsertThreadSnapshot(
+        agentId: agentId,
+        agent: agent,
+        runs: listedRuns,
       );
+      final runs = await _enrichTerminalRunResults(agentId, listedRuns);
+      await _upsertThreadSnapshot(agentId: agentId, agent: agent, runs: runs);
 
       final messages = await _messagesFromRuns(agentId, runs);
       return ThreadSnapshot.fresh(agent: agent, runs: runs, messages: messages);
     } on NetworkException {
       return _readStaleCache(agentId, isOffline: true);
     }
+  }
+
+  Future<void> _upsertThreadSnapshot({
+    required String agentId,
+    required AgentDetail agent,
+    required List<AgentRun> runs,
+  }) async {
+    await _database.threadSnapshotsDao.upsert(
+      ThreadSnapshotsCompanion.insert(
+        agentId: agentId,
+        json: jsonEncode({
+          'agent': agent.toJson(),
+          'runs': runs.map((run) => run.toJson()).toList(growable: false),
+        }),
+        cachedAt: DateTime.now().toUtc(),
+      ),
+    );
   }
 
   /// Streams SSE events for [runId], resuming from [lastEventId] when set.
@@ -361,10 +382,23 @@ class ThreadRepository {
     try {
       final run = await loadRun(agentId, runId);
       return _blankToNull(run.resultText) == null ? null : run;
-    } on UnauthorizedException {
-      rethrow;
-    } on RateLimitedException {
-      rethrow;
+    } on UnauthorizedException catch (error, stackTrace) {
+      developer.log(
+        'Unable to fetch terminal run result because authorization failed.',
+        name: 'ThreadRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      await _onUnauthorized?.call();
+      return null;
+    } on RateLimitedException catch (error, stackTrace) {
+      developer.log(
+        'Unable to fetch terminal run result because the API is rate limited.',
+        name: 'ThreadRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return null;
     } on AppException catch (error, stackTrace) {
       developer.log(
         'Unable to fetch terminal run result.',

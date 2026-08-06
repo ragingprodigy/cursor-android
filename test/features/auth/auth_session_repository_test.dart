@@ -1,4 +1,5 @@
 import 'package:cursor/core/config/app_config.dart';
+import 'package:cursor/core/db/app_database.dart';
 import 'package:cursor/core/error/app_exception.dart';
 import 'package:cursor/core/network/cursor_api_client.dart';
 import 'package:cursor/core/storage/secure_credentials_store.dart';
@@ -123,5 +124,70 @@ void main() {
     expect(repository.isAuthenticated, isFalse);
     expect(credentials.apiKey, isNull);
     expect(authorization, isNull);
+  });
+
+  test('signOut clears local cache tables', () async {
+    final database = AppDatabase.memory();
+    addTearDown(database.close);
+    await database.agentsDao.upsertAll([
+      AgentsCompanion.insert(
+        id: 'bc-cache',
+        name: 'Cached agent',
+        status: 'completed',
+        createdAt: DateTime.utc(2026, 8, 1),
+        updatedAt: DateTime.utc(2026, 8, 1),
+        json: '{}',
+        cachedAt: DateTime.utc(2026, 8, 1, 1),
+      ),
+    ]);
+    await database.threadSnapshotsDao.upsert(
+      ThreadSnapshotsCompanion.insert(
+        agentId: 'bc-cache',
+        json: '{"runs":[]}',
+        cachedAt: DateTime.utc(2026, 8, 1, 1),
+      ),
+    );
+    await database.draftsDao.upsert(
+      DraftsCompanion.insert(
+        id: 'followup:bc-cache',
+        content: 'draft',
+        updatedAt: DateTime.utc(2026, 8, 1),
+      ),
+    );
+    await database.runPromptsDao.upsert(
+      RunPromptsCompanion.insert(
+        agentId: 'bc-cache',
+        runId: 'run-1',
+        content: 'prompt',
+        createdAt: DateTime.utc(2026, 8, 1),
+      ),
+    );
+    await database.runResultsDao.upsert(
+      RunResultsCompanion.insert(
+        agentId: 'bc-cache',
+        runId: 'run-1',
+        content: 'result',
+        createdAt: DateTime.utc(2026, 8, 1),
+      ),
+    );
+    final credentials = _FakeCredentialsStore('stored-key');
+    final repository = AuthSessionRepository(
+      apiClient: CursorApiClient(Dio()),
+      remoteSource: _FakeAuthRemoteSource(
+        () async => const ApiKeyInfo(apiKeyName: 'key'),
+      ),
+      credentials: credentials,
+      config: const AppConfig(apiBaseUrl: 'https://api.cursor.com'),
+      clearLocalCache: database.clearLocalCache,
+    );
+
+    await repository.signOut();
+
+    expect(credentials.apiKey, isNull);
+    expect(await database.agentsDao.getAll(), isEmpty);
+    expect(await database.threadSnapshotsDao.getByAgentId('bc-cache'), isNull);
+    expect(await database.draftsDao.getAll(), isEmpty);
+    expect(await database.runPromptsDao.getByAgentId('bc-cache'), isEmpty);
+    expect(await database.runResultsDao.getByAgentId('bc-cache'), isEmpty);
   });
 }

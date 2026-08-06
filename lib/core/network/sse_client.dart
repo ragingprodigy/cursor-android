@@ -105,7 +105,7 @@ class SseClient {
         }
       }
     } on DioException catch (error) {
-      throw _mapDioException(error);
+      throw await _mapDioException(error);
     } finally {
       if (!cancelToken.isCancelled) {
         cancelToken.cancel();
@@ -113,16 +113,23 @@ class SseClient {
     }
   }
 
-  AppException _mapDioException(DioException error) {
+  Future<AppException> _mapDioException(DioException error) async {
     if (_isConnectionError(error)) {
       return const NetworkException();
     }
 
-    final statusCode = error.response?.statusCode;
+    final response = error.response;
+    final statusCode = response?.statusCode;
+    final details = await _apiErrorDetailsFromResponseData(response?.data);
+    final message = _apiErrorMessage(details);
     return switch (statusCode) {
-      401 => const UnauthorizedException(),
-      429 => const RateLimitedException(),
-      _ => ApiException('Cursor stream request failed', statusCode: statusCode),
+      401 => UnauthorizedException(message ?? 'API key rejected'),
+      429 => RateLimitedException(message ?? 'Rate limited'),
+      _ => ApiException(
+        message ?? 'Cursor stream request failed',
+        statusCode: statusCode,
+        code: details.code,
+      ),
     };
   }
 
@@ -136,4 +143,81 @@ class SseClient {
       _ => false,
     };
   }
+
+  Future<_ApiErrorDetails> _apiErrorDetailsFromResponseData(
+    Object? data,
+  ) async {
+    if (data is ResponseBody) {
+      final bytes = <int>[];
+      await for (final chunk in data.stream.cast<List<int>>()) {
+        bytes.addAll(chunk);
+      }
+      return _apiErrorDetailsFromString(
+        utf8.decode(bytes, allowMalformed: true),
+      );
+    }
+
+    if (data is List<int>) {
+      return _apiErrorDetailsFromString(
+        utf8.decode(data, allowMalformed: true),
+      );
+    }
+
+    if (data is String) {
+      return _apiErrorDetailsFromString(data);
+    }
+
+    if (data is Map) {
+      return _apiErrorDetailsFromMap(data);
+    }
+
+    return const _ApiErrorDetails();
+  }
+
+  _ApiErrorDetails _apiErrorDetailsFromString(String data) {
+    if (data.trim().isEmpty) {
+      return const _ApiErrorDetails();
+    }
+
+    try {
+      final decoded = jsonDecode(data);
+      if (decoded is Map) {
+        return _apiErrorDetailsFromMap(decoded);
+      }
+    } on FormatException {
+      return const _ApiErrorDetails();
+    }
+
+    return const _ApiErrorDetails();
+  }
+
+  _ApiErrorDetails _apiErrorDetailsFromMap(Map<dynamic, dynamic> data) {
+    final code = _nonEmptyString(data['code']);
+    final message = _nonEmptyString(data['message']);
+    return _ApiErrorDetails(code: code, message: message);
+  }
+
+  String? _apiErrorMessage(_ApiErrorDetails details) {
+    final code = details.code;
+    final message = details.message;
+    if (code != null && message != null) {
+      return '$code: $message';
+    }
+    return code ?? message;
+  }
+
+  String? _nonEmptyString(Object? value) {
+    if (value is! String) {
+      return null;
+    }
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+}
+
+class _ApiErrorDetails {
+  const _ApiErrorDetails({this.code, this.message});
+
+  final String? code;
+  final String? message;
 }

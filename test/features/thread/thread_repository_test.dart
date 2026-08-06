@@ -138,6 +138,72 @@ void main() {
   );
 
   test(
+    'load returns listed runs when terminal result enrichment is rate limited',
+    () async {
+      final seenPaths = <String>[];
+      final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+      dio.httpClientAdapter = _Adapter((options) async {
+        seenPaths.add(options.path);
+        if (options.path == '/v1/agents/bc-1') {
+          return ResponseBody.fromString(
+            '{"agent":{"id":"bc-1","name":"Agent","status":"completed"}}',
+            200,
+            headers: {
+              Headers.contentTypeHeader: ['application/json'],
+            },
+          );
+        }
+        if (options.path == '/v1/agents/bc-1/runs/run-1') {
+          return ResponseBody.fromString(
+            '{"code":"rate_limited","message":"Slow down."}',
+            429,
+            headers: {
+              Headers.contentTypeHeader: ['application/json'],
+            },
+          );
+        }
+        return ResponseBody.fromString(
+          '''
+        {
+          "items": [
+            {
+              "id": "run-1",
+              "status": "completed",
+              "promptText": "Prompt",
+              "createdAt": "2026-08-01T10:05:00.000Z"
+            }
+          ]
+        }
+        ''',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      });
+      final repository = ThreadRepository(
+        apiClient: CursorApiClient(dio),
+        database: database,
+        sseClient: SseClient(dio),
+        runResultStore: RunResultStore(database.runResultsDao),
+      );
+
+      final snapshot = await repository.load('bc-1');
+
+      expect(seenPaths, [
+        '/v1/agents/bc-1',
+        '/v1/agents/bc-1/runs',
+        '/v1/agents/bc-1/runs/run-1',
+      ]);
+      expect(snapshot.runs.map((run) => run.id), ['run-1']);
+      expect(snapshot.messages.whereType<UserMessage>().single.text, 'Prompt');
+      final row = await database.threadSnapshotsDao.getByAgentId('bc-1');
+      expect(row, isNotNull);
+      expect(row!.json, contains('"run-1"'));
+    },
+  );
+
+  test(
     'network failure returns cached snapshot marked stale and offline',
     () async {
       await database.threadSnapshotsDao.upsert(

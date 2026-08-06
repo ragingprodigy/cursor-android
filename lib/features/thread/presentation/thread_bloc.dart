@@ -685,11 +685,17 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
         );
       case 'result':
         await _persistStreamResult(event.runId, sse.data);
+        if (isClosed) {
+          return;
+        }
         _stopStreaming();
         emit(_clearLiveOverlay(state));
         add(const ThreadRefreshed());
       case 'done':
         await _persistStreamResult(event.runId, sse.data);
+        if (isClosed) {
+          return;
+        }
         _stopStreaming();
         emit(_clearLiveOverlay(state));
         add(const ThreadRefreshed());
@@ -1000,7 +1006,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   bool _isInvalidLastEventId(Object? error) {
     return error is ApiException &&
         error.statusCode == 400 &&
-        error.message.toLowerCase().contains('invalid_last_event_id');
+        (error.code == 'invalid_last_event_id' ||
+            error.message.toLowerCase().contains('invalid_last_event_id'));
   }
 
   String? _nestedString(Object? value) {

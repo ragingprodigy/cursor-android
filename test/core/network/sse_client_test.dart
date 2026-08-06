@@ -145,6 +145,34 @@ void main() {
     );
   });
 
+  test('maps 400 API error code from stream body into ApiException', () async {
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      return ResponseBody.fromString(
+        '{"code":"invalid_last_event_id","message":"Last event id expired."}',
+        400,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final client = SseClient(dio);
+
+    expect(
+      () => client.stream('/v1/agents/bc-1/runs/run-1/stream').toList(),
+      throwsA(
+        isA<ApiException>()
+            .having((error) => error.statusCode, 'statusCode', 400)
+            .having((error) => error.code, 'code', 'invalid_last_event_id')
+            .having(
+              (error) => error.message,
+              'message',
+              contains('invalid_last_event_id'),
+            ),
+      ),
+    );
+  });
+
   test('maps connection failures to NetworkException', () async {
     final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
     dio.httpClientAdapter = _Adapter((options) async {

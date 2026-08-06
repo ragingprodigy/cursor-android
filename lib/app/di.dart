@@ -63,6 +63,7 @@ class AppDependencies {
     sseClient: sseClient,
     runPromptStore: runPromptStore,
     runResultStore: runResultStore,
+    onUnauthorized: authSession.signOut,
   );
   late final FollowUpDraftStore followUpDraftStore = FollowUpDraftStore(
     database.draftsDao,
@@ -90,6 +91,7 @@ class AppDependencies {
         remoteSource: authRemoteSource,
         credentials: credentialsStore,
         config: config,
+        clearLocalCache: database.clearLocalCache,
       );
 
   AuthSessionRepository get authSessionRepository => authSession;
