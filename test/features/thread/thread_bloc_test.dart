@@ -826,10 +826,12 @@ void main() {
           const SseEvent(event: 'thinking', data: '{"text":"Plan A"}'),
         );
         await Future<void>.delayed(Duration.zero);
+        sseController.add(const SseEvent(event: 'assistant', data: 'Draft'));
+        await Future<void>.delayed(Duration.zero);
         sseController.add(
           const SseEvent(event: 'status', data: '{"status":"completed"}'),
         );
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await Future<void>.delayed(const Duration(milliseconds: 900));
       },
       verify: (bloc) {
         expect(bloc.state.isLatestRunActive, isFalse);
@@ -840,7 +842,64 @@ void main() {
             runId: 'run-active',
             text: 'Plan A',
           ),
+        ).called(greaterThanOrEqualTo(1));
+        verify(
+          () => repository.saveRunResult(
+            agentId: 'bc-1',
+            runId: 'run-active',
+            text: 'Draft',
+          ),
         ).called(1);
+      },
+    );
+
+    blocTest<ThreadBloc, ThreadState>(
+      'persists trailing result after terminal status before grace finalize',
+      build: () {
+        var loadCount = 0;
+        when(() => repository.load('bc-1')).thenAnswer((_) async {
+          loadCount++;
+          if (loadCount == 1) {
+            return ThreadSnapshot.fresh(agent: agent, runs: [activeRun]);
+          }
+          return ThreadSnapshot.fresh(agent: agent, runs: [completedRun]);
+        });
+        return buildBloc();
+      },
+      act: (bloc) async {
+        bloc.add(const ThreadRefreshed());
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(const SseEvent(event: 'assistant', data: 'Draft'));
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(
+          const SseEvent(event: 'thinking', data: '{"text":"Plan"}'),
+        );
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(
+          const SseEvent(event: 'status', data: '{"status":"completed"}'),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        sseController.add(
+          const SseEvent(event: 'result', data: '{"text":"Final answer"}'),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      },
+      verify: (bloc) {
+        verify(
+          () => repository.saveRunResult(
+            agentId: 'bc-1',
+            runId: 'run-active',
+            text: 'Final answer',
+          ),
+        ).called(1);
+        verifyNever(
+          () => repository.saveRunResult(
+            agentId: 'bc-1',
+            runId: 'run-active',
+            text: 'Draft',
+          ),
+        );
+        expect(bloc.state.isLatestRunActive, isFalse);
       },
     );
 

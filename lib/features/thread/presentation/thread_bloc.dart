@@ -112,6 +112,15 @@ class _ThreadStreamRefreshTick extends ThreadEvent {
   List<Object?> get props => [runId];
 }
 
+class _ThreadStatusFinalize extends ThreadEvent {
+  const _ThreadStatusFinalize(this.runId);
+
+  final String runId;
+
+  @override
+  List<Object?> get props => [runId];
+}
+
 enum ThreadStatus { loading, cached, ready, failure }
 
 const _sentinel = Object();
@@ -490,6 +499,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     on<_ThreadStreamFailed>(_onStreamFailed);
     on<_ThreadPollTick>(_onPollTick);
     on<_ThreadStreamRefreshTick>(_onStreamRefreshTick);
+    on<_ThreadStatusFinalize>(_onStatusFinalize);
   }
 
   final ThreadRepository _repository;
@@ -510,6 +520,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   Timer? _pollTimer;
   Timer? _reconnectTimer;
   Timer? _streamRefreshTimer;
+  Timer? _statusFinalizeTimer;
 
   AgentDetail? _lastAgent;
   List<ThreadMessage> _lastMessages = const [];
@@ -525,6 +536,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   int _reconnectAttempts = 0;
   bool _retriedInvalidLastEventId = false;
   bool _streamSuspended = false;
+  bool _runResultPersisted = false;
   final StringBuffer _liveAssistantBuffer = StringBuffer();
   final StringBuffer _liveThinkingBuffer = StringBuffer();
   final Map<String, ToolStepMessage> _liveToolStepsById = {};
@@ -862,6 +874,9 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
 
     _remember(event.snapshot);
     final reloaded = await _syncStreamForLatestRun(event.snapshot.latestRun);
+    if (isClosed) {
+      return;
+    }
     final snapshot = reloaded ?? event.snapshot;
     if (reloaded != null) {
       _remember(reloaded);
@@ -926,11 +941,15 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _ThreadStreamEvent event,
     Emitter<ThreadState> emit,
   ) async {
-    if (event.runId != _streamingRunId || _streamSuspended) {
+    if (event.runId != _streamingRunId) {
       return;
     }
 
     final sse = event.event;
+    final isTerminalPayload = sse.event == 'result' || sse.event == 'done';
+    if (_streamSuspended && !isTerminalPayload) {
+      return;
+    }
     if (_resetsReconnectAttempts(sse.event)) {
       _reconnectAttempts = 0;
     }
@@ -953,11 +972,14 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       case 'status':
         final runStatus = _extractRunStatus(sse.data);
         if (runStatus != null && !AgentRun.activeStatuses.contains(runStatus)) {
-          await _completeStreamingRun(
-            emit,
-            runId: event.runId,
-            markInactive: true,
-          );
+          emit(state.copyWith(isLatestRunActive: false));
+          await _persistThinkingOnly(event.runId);
+          if (isClosed) {
+            return;
+          }
+          // Keep the SSE subscription briefly so a trailing result/done can
+          // persist assistant text before teardown.
+          _scheduleStatusFinalize(event.runId);
         } else if (runStatus != null) {
           emit(state.copyWith(isLatestRunActive: true, actionMessage: null));
         }
@@ -970,14 +992,24 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           ),
         );
       case 'result':
+        _statusFinalizeTimer?.cancel();
+        _statusFinalizeTimer = null;
         await _persistStreamResult(event.runId, sse.data);
         if (isClosed) {
           return;
         }
+        if (_streamSuspended) {
+          return;
+        }
         await _completeStreamingRun(emit, runId: event.runId);
       case 'done':
+        _statusFinalizeTimer?.cancel();
+        _statusFinalizeTimer = null;
         await _persistStreamResult(event.runId, sse.data);
         if (isClosed) {
+          return;
+        }
+        if (_streamSuspended) {
           return;
         }
         await _completeStreamingRun(emit, runId: event.runId);
@@ -1078,6 +1110,14 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     }
 
     if (error == null) {
+      if (!state.isLatestRunActive) {
+        await _completeStreamingRun(
+          emit,
+          runId: event.runId,
+          markInactive: true,
+        );
+        return;
+      }
       _scheduleReconnect(event.runId);
       return;
     }
@@ -1111,6 +1151,41 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     if (event.runId == _streamingRunId) {
       add(const ThreadRefreshed());
     }
+  }
+
+  Future<void> _onStatusFinalize(
+    _ThreadStatusFinalize event,
+    Emitter<ThreadState> emit,
+  ) async {
+    if (event.runId != _streamingRunId || _streamSuspended) {
+      return;
+    }
+    await _completeStreamingRun(
+      emit,
+      runId: event.runId,
+      markInactive: true,
+    );
+  }
+
+  void _scheduleStatusFinalize(String runId) {
+    _statusFinalizeTimer?.cancel();
+    _statusFinalizeTimer = Timer(const Duration(milliseconds: 750), () {
+      if (_streamingRunId == runId && !_streamSuspended) {
+        add(_ThreadStatusFinalize(runId));
+      }
+    });
+  }
+
+  Future<void> _persistThinkingOnly(String runId) async {
+    final thinkingText = _blankToNull(_liveThinkingBuffer.toString());
+    if (thinkingText == null) {
+      return;
+    }
+    await _repository.saveRunThinking(
+      agentId: _agentId,
+      runId: runId,
+      text: thinkingText,
+    );
   }
 
   /// Sync stream ownership with the latest run.
@@ -1251,11 +1326,27 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _detachStreamTransports();
     _streamSuspended = true;
     final thinkingText = _blankToNull(_liveThinkingBuffer.toString());
+    final assistantText = _blankToNull(_liveAssistantBuffer.toString());
     if (thinkingText != null) {
       await _repository.saveRunThinking(
         agentId: _agentId,
         runId: runId,
         text: thinkingText,
+      );
+    }
+    if (isClosed) {
+      return;
+    }
+    if (_streamingRunId != runId) {
+      _streamSuspended = false;
+      return;
+    }
+    // Safety net when no result/done persisted the assistant reply yet.
+    if (assistantText != null && !_runResultPersisted) {
+      await _repository.saveRunResult(
+        agentId: _agentId,
+        runId: runId,
+        text: assistantText,
       );
     }
     if (isClosed) {
@@ -1278,6 +1369,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   }
 
   void _detachStreamTransports() {
+    _statusFinalizeTimer?.cancel();
+    _statusFinalizeTimer = null;
     _streamSubscription?.cancel();
     _streamSubscription = null;
     _pollTimer?.cancel();
@@ -1294,6 +1387,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _reconnectAttempts = 0;
     _retriedInvalidLastEventId = false;
     _streamSuspended = false;
+    _runResultPersisted = false;
     _liveAssistantBuffer.clear();
     _liveThinkingBuffer.clear();
     _liveToolStepsById.clear();
@@ -1392,6 +1486,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       runId: runId,
       text: resultText,
     );
+    _runResultPersisted = true;
   }
 
   String? _extractResultText(String data) {
