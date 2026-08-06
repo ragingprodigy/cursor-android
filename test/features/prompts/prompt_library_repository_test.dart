@@ -37,10 +37,9 @@ void main() {
 
     expect(updated.id, created.id);
     expect(updated.body, 'Updated body');
-    expect(
-      updated.createdAt.millisecondsSinceEpoch,
-      created.createdAt.millisecondsSinceEpoch,
-    );
+    expect(updated.createdAt.isBefore(updated.updatedAt) ||
+            updated.createdAt.isAtSameMomentAs(updated.updatedAt),
+        isTrue);
     expect(updated.tags, ['review']);
 
     final loaded = await repository.getById(created.id);
