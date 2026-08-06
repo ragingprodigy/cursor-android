@@ -437,8 +437,20 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   ) async {
     try {
       final snapshot = await _repository.load(_agentId);
+      if (isClosed) {
+        return;
+      }
       _remember(snapshot);
       _syncStreamForLatestRun(snapshot.latestRun);
+      final latestRun = snapshot.latestRun;
+      final latestRunId = latestRun?.id;
+      final isLatestRunActive = latestRun?.isActive ?? false;
+      final keepLiveOverlay = _shouldKeepLiveOverlay(latestRun);
+      final liveAssistantText = keepLiveOverlay ? _liveAssistantText() : null;
+      final liveToolSteps = keepLiveOverlay
+          ? _liveToolSteps()
+          : const <ThreadMessage>[];
+      final isCancelling = _shouldKeepCancelling(latestRun);
       if (snapshot.isStale) {
         emit(
           ThreadState.cached(
@@ -450,10 +462,13 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
             message: snapshot.isOffline
                 ? 'Showing cached thread while offline.'
                 : 'Showing cached thread.',
-            latestRunId: snapshot.latestRun?.id,
-            isLatestRunActive: snapshot.latestRun?.isActive ?? false,
+            latestRunId: latestRunId,
+            isLatestRunActive: isLatestRunActive,
             followUpDraft: _followUpDraft,
+            isCancelling: isCancelling,
             actionMessage: _actionMessage,
+            liveAssistantText: liveAssistantText,
+            liveToolSteps: liveToolSteps,
           ),
         );
         return;
@@ -463,15 +478,24 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           _agentId,
           agent: snapshot.agent,
           messages: snapshot.messages,
-          latestRunId: snapshot.latestRun?.id,
-          isLatestRunActive: snapshot.latestRun?.isActive ?? false,
+          latestRunId: latestRunId,
+          isLatestRunActive: isLatestRunActive,
           followUpDraft: _followUpDraft,
+          isCancelling: isCancelling,
           actionMessage: _actionMessage,
+          liveAssistantText: liveAssistantText,
+          liveToolSteps: liveToolSteps,
         ),
       );
     } on AppException catch (error) {
+      if (isClosed) {
+        return;
+      }
       emit(_failurePreservingThread(error.message));
     } catch (_) {
+      if (isClosed) {
+        return;
+      }
       emit(_failurePreservingThread('Unable to load thread.'));
     } finally {
       event.completer?.complete();
@@ -621,12 +645,15 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _remember(event.snapshot);
     _syncStreamForLatestRun(event.snapshot.latestRun);
 
-    final latestRunId = event.snapshot.latestRun?.id;
-    final isLatestRunActive = event.snapshot.latestRun?.isActive ?? false;
-    final keepLiveOverlay =
-        isLatestRunActive &&
-        latestRunId == state.latestRunId &&
-        _streamingRunId == latestRunId;
+    final latestRun = event.snapshot.latestRun;
+    final latestRunId = latestRun?.id;
+    final isLatestRunActive = latestRun?.isActive ?? false;
+    final keepLiveOverlay = _shouldKeepLiveOverlay(latestRun);
+    final liveAssistantText = keepLiveOverlay ? _liveAssistantText() : null;
+    final liveToolSteps = keepLiveOverlay
+        ? _liveToolSteps()
+        : const <ThreadMessage>[];
+    final isCancelling = _shouldKeepCancelling(latestRun);
 
     if (state.status == ThreadStatus.ready) {
       emit(
@@ -637,9 +664,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           latestRunId: latestRunId,
           isLatestRunActive: isLatestRunActive,
           followUpDraft: _followUpDraft,
+          isCancelling: isCancelling,
           actionMessage: _actionMessage,
-          liveAssistantText: keepLiveOverlay ? state.liveAssistantText : null,
-          liveToolSteps: keepLiveOverlay ? state.liveToolSteps : const [],
+          liveAssistantText: liveAssistantText,
+          liveToolSteps: liveToolSteps,
         ),
       );
       return;
@@ -653,7 +681,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
         latestRunId: latestRunId,
         isLatestRunActive: isLatestRunActive,
         followUpDraft: _followUpDraft,
+        isCancelling: isCancelling,
         actionMessage: _actionMessage,
+        liveAssistantText: liveAssistantText,
+        liveToolSteps: liveToolSteps,
       ),
     );
   }
@@ -888,6 +919,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _streamSubscription = null;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+    _streamRefreshTimer?.cancel();
+    _streamRefreshTimer = null;
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(
       _pollInterval,
@@ -949,6 +982,30 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
 
   ThreadState _clearLiveOverlay(ThreadState base) {
     return base.copyWith(liveAssistantText: null, liveToolSteps: const []);
+  }
+
+  bool _shouldKeepLiveOverlay(AgentRun? latestRun) {
+    final latestRunId = latestRun?.id;
+    return (latestRun?.isActive ?? false) &&
+        latestRunId == state.latestRunId &&
+        _streamingRunId == latestRunId;
+  }
+
+  bool _shouldKeepCancelling(AgentRun? latestRun) {
+    final latestRunId = latestRun?.id;
+    return state.isCancelling &&
+        (latestRun?.isActive ?? false) &&
+        latestRunId == state.latestRunId;
+  }
+
+  String? _liveAssistantText() {
+    return _blankToNull(_liveAssistantBuffer.toString()) ??
+        state.liveAssistantText;
+  }
+
+  List<ThreadMessage> _liveToolSteps() {
+    final buffered = _liveToolStepsById.values.toList(growable: false);
+    return buffered.isNotEmpty ? buffered : state.liveToolSteps;
   }
 
   String _extractDeltaText(String data) {

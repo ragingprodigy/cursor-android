@@ -763,6 +763,46 @@ void main() {
     );
 
     blocTest<ThreadBloc, ThreadState>(
+      'preserves live overlay across refresh while the streamed run is active',
+      build: () {
+        when(() => repository.load('bc-1')).thenAnswer((_) async {
+          return ThreadSnapshot.fresh(agent: agent, runs: [activeRun]);
+        });
+        return buildBloc();
+      },
+      act: (bloc) async {
+        bloc.add(const ThreadRefreshed());
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(const SseEvent(event: 'assistant', data: 'Partial'));
+        await Future<void>.delayed(Duration.zero);
+        sseController.add(
+          const SseEvent(
+            event: 'tool_call',
+            data: '{"callId":"call-1","name":"flutter test"}',
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(bloc.state.liveAssistantText, 'Partial');
+        expect(bloc.state.liveToolSteps, hasLength(1));
+
+        bloc.add(const ThreadRefreshed());
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      },
+      verify: (bloc) {
+        verify(() => repository.load('bc-1')).called(2);
+        expect(bloc.state.status, ThreadStatus.ready);
+        expect(bloc.state.latestRunId, 'run-active');
+        expect(bloc.state.isLatestRunActive, isTrue);
+        expect(bloc.state.liveAssistantText, 'Partial');
+        expect(bloc.state.liveToolSteps, hasLength(1));
+        expect(
+          bloc.state.displayMessages.whereType<AssistantMessage>().last.text,
+          'Partial',
+        );
+      },
+    );
+
+    blocTest<ThreadBloc, ThreadState>(
       'clears live overlays when cache marks the latest run inactive',
       build: () {
         when(() => repository.load('bc-1')).thenAnswer((_) async {
