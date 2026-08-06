@@ -67,6 +67,7 @@ void main() {
           "usageEvents": [
             {
               "chargedCents": 10,
+              "isTokenBasedCall": true,
               "tokenUsage": {
                 "inputTokens": 7,
                 "outputTokens": 8,
@@ -75,7 +76,12 @@ void main() {
               }
             }
           ],
-          "totalPages": 1
+          "pagination": {
+            "numPages": 1,
+            "currentPage": 1,
+            "pageSize": 100,
+            "hasNextPage": false
+          }
         }
         ''',
         200,
@@ -108,6 +114,69 @@ void main() {
     expect(report.events!.totalTokens, 18);
     expect(report.events!.chargedCents, 10);
     expect(report.adminUnavailable, isFalse);
+  });
+
+  test('loadReport pages Admin usage events via pagination.numPages', () async {
+    final eventPages = <int>[];
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    final apiClient = CursorApiClient(dio)..setApiKey('key');
+    dio.httpClientAdapter = _Adapter((options) async {
+      if (options.path == '/teams/spend') {
+        return ResponseBody.fromString(
+          '{"teamMemberSpend":[{"spendCents":1}],"totalPages":1}',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      }
+      final body = options.data;
+      final page = body is Map ? body['page'] as int : 1;
+      eventPages.add(page);
+      return ResponseBody.fromString(
+        '''
+        {
+          "usageEvents": [
+            {
+              "chargedCents": $page,
+              "isTokenBasedCall": true,
+              "tokenUsage": {
+                "inputTokens": $page,
+                "outputTokens": 0,
+                "cacheReadTokens": 0,
+                "cacheWriteTokens": 0
+              }
+            }
+          ],
+          "pagination": {
+            "numPages": 2,
+            "currentPage": $page,
+            "pageSize": 100,
+            "hasNextPage": ${page < 2}
+          }
+        }
+        ''',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = UsageRepository(
+      apiClient: apiClient,
+      database: database,
+      loadAgentUsage: (_) async => const AgentUsage(totalTokens: 0, runs: []),
+    );
+
+    final report = await repository.loadReport(
+      startDate: DateTime.utc(2026, 8, 1),
+      endDate: DateTime.utc(2026, 8, 2),
+    );
+
+    expect(eventPages, [1, 2]);
+    expect(report.events!.eventCount, 2);
+    expect(report.events!.totalTokens, 3);
+    expect(report.events!.chargedCents, 3);
   });
 
   test('loadReport keeps spend when usage events fail', () async {
