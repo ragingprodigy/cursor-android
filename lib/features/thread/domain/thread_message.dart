@@ -42,6 +42,20 @@ class AssistantMessage extends ThreadMessage {
   List<Object?> get props => [id, runId, createdAt, text, status];
 }
 
+class ThinkingMessage extends ThreadMessage {
+  const ThinkingMessage({
+    required super.id,
+    required super.runId,
+    required super.createdAt,
+    required this.text,
+  });
+
+  final String text;
+
+  @override
+  List<Object?> get props => [id, runId, createdAt, text];
+}
+
 class ToolStepMessage extends ThreadMessage {
   const ToolStepMessage({
     required super.id,

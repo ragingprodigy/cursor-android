@@ -4,10 +4,14 @@ import 'dart:developer' as developer;
 
 import 'package:cursor/core/error/app_exception.dart';
 import 'package:cursor/core/network/sse_client.dart';
+import 'package:cursor/features/launch/domain/launch_catalog.dart';
+import 'package:cursor/features/models/data/models_repository.dart';
 import 'package:cursor/features/thread/data/follow_up_draft_store.dart';
+import 'package:cursor/features/thread/data/follow_up_model_store.dart';
 import 'package:cursor/features/thread/data/thread_repository.dart';
 import 'package:cursor/features/thread/domain/agent_detail.dart';
 import 'package:cursor/features/thread/domain/agent_run.dart';
+import 'package:cursor/features/thread/domain/agent_usage.dart';
 import 'package:cursor/features/thread/domain/thread_message.dart';
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -38,13 +42,23 @@ class ThreadFollowUpDraftChanged extends ThreadEvent {
   List<Object?> get props => [text];
 }
 
-class ThreadFollowUpSubmitted extends ThreadEvent {
-  const ThreadFollowUpSubmitted(this.text);
+class ThreadFollowUpModelChanged extends ThreadEvent {
+  const ThreadFollowUpModelChanged(this.modelId);
 
-  final String text;
+  final String? modelId;
 
   @override
-  List<Object?> get props => [text];
+  List<Object?> get props => [modelId];
+}
+
+class ThreadFollowUpSubmitted extends ThreadEvent {
+  const ThreadFollowUpSubmitted(this.text, {this.modelId});
+
+  final String text;
+  final String? modelId;
+
+  @override
+  List<Object?> get props => [text, modelId];
 }
 
 class ThreadCancelRequested extends ThreadEvent {
@@ -118,7 +132,13 @@ class ThreadState extends Equatable {
     this.isCancelling = false,
     this.actionMessage,
     this.liveAssistantText,
+    this.liveThinkingText,
     this.liveToolSteps = const [],
+    this.models = const [LaunchModel.defaultModel],
+    this.selectedModelId,
+    this.isLoadingModels = false,
+    this.agentUsage,
+    this.usageMessage,
   });
 
   const ThreadState.loading(String agentId, {String followUpDraft = ''})
@@ -146,7 +166,13 @@ class ThreadState extends Equatable {
     bool isCancelling = false,
     String? actionMessage,
     String? liveAssistantText,
+    String? liveThinkingText,
     List<ThreadMessage> liveToolSteps = const [],
+    List<LaunchModel> models = const [LaunchModel.defaultModel],
+    String? selectedModelId,
+    bool isLoadingModels = false,
+    AgentUsage? agentUsage,
+    String? usageMessage,
   }) : this._(
          agentId: agentId,
          status: ThreadStatus.cached,
@@ -162,7 +188,13 @@ class ThreadState extends Equatable {
          isCancelling: isCancelling,
          actionMessage: actionMessage,
          liveAssistantText: liveAssistantText,
+         liveThinkingText: liveThinkingText,
          liveToolSteps: liveToolSteps,
+         models: models,
+         selectedModelId: selectedModelId,
+         isLoadingModels: isLoadingModels,
+         agentUsage: agentUsage,
+         usageMessage: usageMessage,
        );
 
   const ThreadState.ready(
@@ -176,7 +208,13 @@ class ThreadState extends Equatable {
     bool isCancelling = false,
     String? actionMessage,
     String? liveAssistantText,
+    String? liveThinkingText,
     List<ThreadMessage> liveToolSteps = const [],
+    List<LaunchModel> models = const [LaunchModel.defaultModel],
+    String? selectedModelId,
+    bool isLoadingModels = false,
+    AgentUsage? agentUsage,
+    String? usageMessage,
   }) : this._(
          agentId: agentId,
          status: ThreadStatus.ready,
@@ -191,7 +229,13 @@ class ThreadState extends Equatable {
          isCancelling: isCancelling,
          actionMessage: actionMessage,
          liveAssistantText: liveAssistantText,
+         liveThinkingText: liveThinkingText,
          liveToolSteps: liveToolSteps,
+         models: models,
+         selectedModelId: selectedModelId,
+         isLoadingModels: isLoadingModels,
+         agentUsage: agentUsage,
+         usageMessage: usageMessage,
        );
 
   const ThreadState.failure(
@@ -203,6 +247,11 @@ class ThreadState extends Equatable {
     bool isLatestRunActive = false,
     String followUpDraft = '',
     String? actionMessage,
+    List<LaunchModel> models = const [LaunchModel.defaultModel],
+    String? selectedModelId,
+    bool isLoadingModels = false,
+    AgentUsage? agentUsage,
+    String? usageMessage,
   }) : this._(
          agentId: agentId,
          status: ThreadStatus.failure,
@@ -215,6 +264,11 @@ class ThreadState extends Equatable {
          isLatestRunActive: isLatestRunActive,
          followUpDraft: followUpDraft,
          actionMessage: actionMessage,
+         models: models,
+         selectedModelId: selectedModelId,
+         isLoadingModels: isLoadingModels,
+         agentUsage: agentUsage,
+         usageMessage: usageMessage,
        );
 
   final String agentId;
@@ -242,8 +296,17 @@ class ThreadState extends Equatable {
   /// top of [messages] until the run completes and a refresh supersedes it.
   final String? liveAssistantText;
 
+  /// In-progress thinking text streamed for the active run.
+  final String? liveThinkingText;
+
   /// In-progress tool call steps streamed for the active run.
   final List<ThreadMessage> liveToolSteps;
+
+  final List<LaunchModel> models;
+  final String? selectedModelId;
+  final bool isLoadingModels;
+  final AgentUsage? agentUsage;
+  final String? usageMessage;
 
   bool get isLoading => status == ThreadStatus.loading;
 
@@ -257,12 +320,21 @@ class ThreadState extends Equatable {
   List<ThreadMessage> get displayMessages {
     final hasLiveText =
         liveAssistantText != null && liveAssistantText!.isNotEmpty;
-    if (liveToolSteps.isEmpty && !hasLiveText) {
+    final hasLiveThinking =
+        liveThinkingText != null && liveThinkingText!.isNotEmpty;
+    if (liveToolSteps.isEmpty && !hasLiveText && !hasLiveThinking) {
       return messages;
     }
     final runId = latestRunId ?? agentId;
     return [
       ...messages,
+      if (hasLiveThinking)
+        ThinkingMessage(
+          id: 'live:$runId:thinking',
+          runId: runId,
+          text: liveThinkingText!,
+          createdAt: DateTime.now().toUtc(),
+        ),
       ...liveToolSteps,
       if (hasLiveText)
         AssistantMessage(
@@ -287,7 +359,13 @@ class ThreadState extends Equatable {
     bool? isCancelling,
     Object? actionMessage = _sentinel,
     Object? liveAssistantText = _sentinel,
+    Object? liveThinkingText = _sentinel,
     List<ThreadMessage>? liveToolSteps,
+    List<LaunchModel>? models,
+    Object? selectedModelId = _sentinel,
+    bool? isLoadingModels,
+    Object? agentUsage = _sentinel,
+    Object? usageMessage = _sentinel,
   }) {
     return ThreadState._(
       agentId: agentId,
@@ -310,7 +388,21 @@ class ThreadState extends Equatable {
       liveAssistantText: liveAssistantText == _sentinel
           ? this.liveAssistantText
           : liveAssistantText as String?,
+      liveThinkingText: liveThinkingText == _sentinel
+          ? this.liveThinkingText
+          : liveThinkingText as String?,
       liveToolSteps: liveToolSteps ?? this.liveToolSteps,
+      models: models ?? this.models,
+      selectedModelId: selectedModelId == _sentinel
+          ? this.selectedModelId
+          : selectedModelId as String?,
+      isLoadingModels: isLoadingModels ?? this.isLoadingModels,
+      agentUsage: agentUsage == _sentinel
+          ? this.agentUsage
+          : agentUsage as AgentUsage?,
+      usageMessage: usageMessage == _sentinel
+          ? this.usageMessage
+          : usageMessage as String?,
     );
   }
 
@@ -331,7 +423,13 @@ class ThreadState extends Equatable {
       isCancelling,
       actionMessage,
       liveAssistantText,
+      liveThinkingText,
       liveToolSteps,
+      models,
+      selectedModelId,
+      isLoadingModels,
+      agentUsage,
+      usageMessage,
     ];
   }
 }
@@ -340,6 +438,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   factory ThreadBloc({
     required ThreadRepository repository,
     required FollowUpDraftStore draftStore,
+    ModelsRepository? modelsRepository,
+    FollowUpModelStore? modelStore,
     required String agentId,
     Duration pollInterval = const Duration(seconds: 3),
     Duration reconnectDelay = const Duration(seconds: 2),
@@ -352,6 +452,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     return ThreadBloc._(
       repository,
       draftStore,
+      modelsRepository,
+      modelStore,
       agentId,
       pollInterval,
       reconnectDelay,
@@ -366,6 +468,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   ThreadBloc._(
     this._repository,
     this._draftStore,
+    this._modelsRepository,
+    this._modelStore,
     this._agentId,
     this._pollInterval,
     this._reconnectDelay,
@@ -378,6 +482,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     on<ThreadStarted>(_onStarted);
     on<ThreadRefreshed>(_onRefreshed);
     on<ThreadFollowUpDraftChanged>(_onFollowUpDraftChanged);
+    on<ThreadFollowUpModelChanged>(_onFollowUpModelChanged);
     on<ThreadFollowUpSubmitted>(_onFollowUpSubmitted);
     on<ThreadCancelRequested>(_onCancelRequested);
     on<_ThreadCacheChanged>(_onCacheChanged);
@@ -389,6 +494,8 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
 
   final ThreadRepository _repository;
   final FollowUpDraftStore _draftStore;
+  final ModelsRepository? _modelsRepository;
+  final FollowUpModelStore? _modelStore;
   final String _agentId;
   final Duration _pollInterval;
   final Duration _reconnectDelay;
@@ -410,12 +517,15 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   bool _lastIsLatestRunActive = false;
 
   String _followUpDraft = '';
+  String? _selectedModelId;
+  List<LaunchModel> _models = const [LaunchModel.defaultModel];
   String? _actionMessage;
   String? _streamingRunId;
   String? _lastEventId;
   int _reconnectAttempts = 0;
   bool _retriedInvalidLastEventId = false;
   final StringBuffer _liveAssistantBuffer = StringBuffer();
+  final StringBuffer _liveThinkingBuffer = StringBuffer();
   final Map<String, ToolStepMessage> _liveToolStepsById = {};
 
   Future<void> _onStarted(
@@ -424,10 +534,12 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   ) async {
     emit(ThreadState.loading(_agentId));
     _followUpDraft = await _draftStore.load(_agentId);
+    _selectedModelId = await _loadSelectedModel();
     await _cacheSubscription?.cancel();
     _cacheSubscription = _repository.watchCache(_agentId).listen((snapshot) {
       add(_ThreadCacheChanged(snapshot));
     });
+    await _loadModels(emit);
     add(const ThreadRefreshed());
   }
 
@@ -447,6 +559,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       final isLatestRunActive = latestRun?.isActive ?? false;
       final keepLiveOverlay = _shouldKeepLiveOverlay(latestRun);
       final liveAssistantText = keepLiveOverlay ? _liveAssistantText() : null;
+      final liveThinkingText = keepLiveOverlay ? _liveThinkingText() : null;
       final liveToolSteps = keepLiveOverlay
           ? _liveToolSteps()
           : const <ThreadMessage>[];
@@ -468,7 +581,12 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
             isCancelling: isCancelling,
             actionMessage: _actionMessage,
             liveAssistantText: liveAssistantText,
+            liveThinkingText: liveThinkingText,
             liveToolSteps: liveToolSteps,
+            models: _models,
+            selectedModelId: _selectedModelId,
+            agentUsage: snapshot.usage,
+            usageMessage: snapshot.usageMessage,
           ),
         );
         return;
@@ -484,7 +602,12 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           isCancelling: isCancelling,
           actionMessage: _actionMessage,
           liveAssistantText: liveAssistantText,
+          liveThinkingText: liveThinkingText,
           liveToolSteps: liveToolSteps,
+          models: _models,
+          selectedModelId: _selectedModelId,
+          agentUsage: snapshot.usage,
+          usageMessage: snapshot.usageMessage,
         ),
       );
     } on AppException catch (error) {
@@ -511,6 +634,20 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     await _draftStore.save(_agentId, event.text);
   }
 
+  Future<void> _onFollowUpModelChanged(
+    ThreadFollowUpModelChanged event,
+    Emitter<ThreadState> emit,
+  ) async {
+    _selectedModelId = _blankToNull(event.modelId);
+    emit(
+      _withActionMessage(
+        null,
+        state.copyWith(selectedModelId: _selectedModelId),
+      ),
+    );
+    await _modelStore?.save(_agentId, _selectedModelId);
+  }
+
   Future<void> _onFollowUpSubmitted(
     ThreadFollowUpSubmitted event,
     Emitter<ThreadState> emit,
@@ -524,7 +661,14 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
 
     late final AgentRun run;
     try {
-      run = await _repository.sendFollowUp(_agentId, text);
+      final selectedModelId = _selectedModelIdForSubmit(event.modelId);
+      run = selectedModelId == null
+          ? await _repository.sendFollowUp(_agentId, text)
+          : await _repository.sendFollowUp(
+              _agentId,
+              text,
+              modelId: selectedModelId,
+            );
     } on ApiException catch (error) {
       if (error.statusCode == 409) {
         emit(
@@ -534,6 +678,16 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           ),
         );
         add(const ThreadRefreshed());
+        return;
+      }
+      if (_isModelRejected(error)) {
+        emit(
+          _withActionMessage(
+            'Cursor rejected the selected model. Choose Default or another '
+            'model, then try again. (${error.message})',
+            state.copyWith(isSendingFollowUp: false),
+          ),
+        );
         return;
       }
       emit(
@@ -635,6 +789,63 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     return base.copyWith(actionMessage: message);
   }
 
+  Future<String?> _loadSelectedModel() async {
+    try {
+      return _blankToNull(await _modelStore?.load(_agentId));
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to load follow-up model.',
+        name: 'ThreadBloc',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return null;
+    }
+  }
+
+  Future<void> _loadModels(Emitter<ThreadState> emit) async {
+    final repository = _modelsRepository;
+    if (repository == null) {
+      return;
+    }
+    emit(
+      state.copyWith(
+        models: _models,
+        selectedModelId: _selectedModelId,
+        isLoadingModels: true,
+      ),
+    );
+    final catalog = await repository.loadModels();
+    if (isClosed) {
+      return;
+    }
+    _models = catalog.models;
+    emit(
+      _withActionMessage(
+        catalog.message,
+        state.copyWith(
+          models: _models,
+          selectedModelId: _selectedModelId,
+          isLoadingModels: false,
+        ),
+      ),
+    );
+  }
+
+  String? _selectedModelIdForSubmit(String? eventModelId) {
+    final selected =
+        _blankToNull(eventModelId) ?? _blankToNull(_selectedModelId);
+    return selected == LaunchModel.defaultModel.id ? null : selected;
+  }
+
+  bool _isModelRejected(ApiException error) {
+    if (error.statusCode != 400) {
+      return false;
+    }
+    final message = error.message.toLowerCase();
+    return message.contains('model') || message.contains('bad request');
+  }
+
   void _onCacheChanged(_ThreadCacheChanged event, Emitter<ThreadState> emit) {
     if (event.snapshot.agent == null && event.snapshot.messages.isEmpty) {
       if (state.status == ThreadStatus.loading) {
@@ -650,6 +861,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     final isLatestRunActive = latestRun?.isActive ?? false;
     final keepLiveOverlay = _shouldKeepLiveOverlay(latestRun);
     final liveAssistantText = keepLiveOverlay ? _liveAssistantText() : null;
+    final liveThinkingText = keepLiveOverlay ? _liveThinkingText() : null;
     final liveToolSteps = keepLiveOverlay
         ? _liveToolSteps()
         : const <ThreadMessage>[];
@@ -667,7 +879,12 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           isCancelling: isCancelling,
           actionMessage: _actionMessage,
           liveAssistantText: liveAssistantText,
+          liveThinkingText: liveThinkingText,
           liveToolSteps: liveToolSteps,
+          models: _models,
+          selectedModelId: _selectedModelId,
+          agentUsage: event.snapshot.usage,
+          usageMessage: event.snapshot.usageMessage,
         ),
       );
       return;
@@ -684,7 +901,12 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
         isCancelling: isCancelling,
         actionMessage: _actionMessage,
         liveAssistantText: liveAssistantText,
+        liveThinkingText: liveThinkingText,
         liveToolSteps: liveToolSteps,
+        models: _models,
+        selectedModelId: _selectedModelId,
+        agentUsage: event.snapshot.usage,
+        usageMessage: event.snapshot.usageMessage,
       ),
     );
   }
@@ -706,6 +928,9 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     }
 
     switch (sse.event) {
+      case 'thinking':
+        _liveThinkingBuffer.write(_extractDeltaText(sse.data));
+        emit(state.copyWith(liveThinkingText: _liveThinkingBuffer.toString()));
       case 'assistant':
         _liveAssistantBuffer.write(_extractDeltaText(sse.data));
         emit(
@@ -783,6 +1008,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
           isLatestRunActive: false,
           followUpDraft: _followUpDraft,
           actionMessage: error.message,
+          models: _models,
+          selectedModelId: _selectedModelId,
+          agentUsage: state.agentUsage,
+          usageMessage: state.usageMessage,
         ),
       );
       return;
@@ -959,6 +1188,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _reconnectAttempts = 0;
     _retriedInvalidLastEventId = false;
     _liveAssistantBuffer.clear();
+    _liveThinkingBuffer.clear();
     _liveToolStepsById.clear();
   }
 
@@ -975,13 +1205,17 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
 
   bool _resetsReconnectAttempts(String event) {
     return switch (event) {
-      'assistant' || 'tool_call' || 'result' => true,
+      'assistant' || 'thinking' || 'tool_call' || 'result' => true,
       _ => false,
     };
   }
 
   ThreadState _clearLiveOverlay(ThreadState base) {
-    return base.copyWith(liveAssistantText: null, liveToolSteps: const []);
+    return base.copyWith(
+      liveAssistantText: null,
+      liveThinkingText: null,
+      liveToolSteps: const [],
+    );
   }
 
   bool _shouldKeepLiveOverlay(AgentRun? latestRun) {
@@ -1001,6 +1235,11 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   String? _liveAssistantText() {
     return _blankToNull(_liveAssistantBuffer.toString()) ??
         state.liveAssistantText;
+  }
+
+  String? _liveThinkingText() {
+    return _blankToNull(_liveThinkingBuffer.toString()) ??
+        state.liveThinkingText;
   }
 
   List<ThreadMessage> _liveToolSteps() {
@@ -1030,6 +1269,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   }
 
   Future<void> _persistStreamResult(String runId, String data) async {
+    await _persistStreamThinking(runId);
     final resultText =
         _extractResultText(data) ??
         _blankToNull(_liveAssistantBuffer.toString());
@@ -1040,6 +1280,18 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       agentId: _agentId,
       runId: runId,
       text: resultText,
+    );
+  }
+
+  Future<void> _persistStreamThinking(String runId) async {
+    final thinkingText = _blankToNull(_liveThinkingBuffer.toString());
+    if (thinkingText == null) {
+      return;
+    }
+    await _repository.saveRunThinking(
+      agentId: _agentId,
+      runId: runId,
+      text: thinkingText,
     );
   }
 
@@ -1213,6 +1465,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       isLatestRunActive: isLatestRunActive,
       followUpDraft: _followUpDraft,
       actionMessage: _actionMessage,
+      models: _models,
+      selectedModelId: _selectedModelId,
+      agentUsage: state.agentUsage,
+      usageMessage: state.usageMessage,
     );
   }
 
