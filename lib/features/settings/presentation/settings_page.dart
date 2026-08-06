@@ -113,6 +113,18 @@ class SettingsPage extends HookWidget {
             const SizedBox(height: 16),
             Card(
               child: ListTile(
+                leading: const Icon(Icons.query_stats_outlined),
+                title: const Text('Usage'),
+                subtitle: const Text(
+                  'View Admin API spend and cached agent token usage.',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => context.push('/usage'),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Card(
+              child: ListTile(
                 leading: const Icon(Icons.library_books_outlined),
                 title: const Text('Prompt library'),
                 subtitle: const Text(

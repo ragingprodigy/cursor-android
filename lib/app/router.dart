@@ -6,6 +6,7 @@ import 'package:cursor/features/prompts/presentation/prompt_edit_page.dart';
 import 'package:cursor/features/prompts/presentation/prompt_library_page.dart';
 import 'package:cursor/features/settings/presentation/settings_page.dart';
 import 'package:cursor/features/thread/presentation/thread_page.dart';
+import 'package:cursor/features/usage/presentation/usage_page.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 
@@ -101,6 +102,15 @@ GoRouter createAppRouter(AppDependencies dependencies) {
             ],
           ),
         ],
+      ),
+      GoRoute(
+        path: '/usage',
+        builder: (context, state) {
+          return BlocProvider(
+            create: (_) => dependencies.createUsageBloc(),
+            child: const UsagePage(),
+          );
+        },
       ),
     ],
   );

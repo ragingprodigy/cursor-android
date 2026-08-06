@@ -50,4 +50,3 @@ app.*.map.json
 # Android build outputs
 android/build/
 android/**/build/
-

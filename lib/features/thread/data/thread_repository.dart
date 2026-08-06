@@ -5,11 +5,14 @@ import 'package:cursor/core/db/app_database.dart';
 import 'package:cursor/core/error/app_exception.dart';
 import 'package:cursor/core/network/cursor_api_client.dart';
 import 'package:cursor/core/network/sse_client.dart';
+import 'package:cursor/features/thread/data/agent_usage_parser.dart';
 import 'package:cursor/features/thread/data/run_prompt_store.dart';
 import 'package:cursor/features/thread/data/run_result_store.dart';
+import 'package:cursor/features/thread/data/run_thinking_store.dart';
 import 'package:cursor/features/thread/data/thread_message_mapper.dart';
 import 'package:cursor/features/thread/domain/agent_detail.dart';
 import 'package:cursor/features/thread/domain/agent_run.dart';
+import 'package:cursor/features/thread/domain/agent_usage.dart';
 import 'package:cursor/features/thread/domain/thread_message.dart';
 import 'package:equatable/equatable.dart';
 
@@ -20,6 +23,8 @@ class ThreadSnapshot extends Equatable {
     required Iterable<ThreadMessage> messages,
     required this.isOffline,
     required this.isStale,
+    this.usage,
+    this.usageMessage,
     this.cachedAt,
   }) : runs = List.unmodifiable(runs),
        messages = List.unmodifiable(messages);
@@ -28,6 +33,8 @@ class ThreadSnapshot extends Equatable {
     required AgentDetail? agent,
     Iterable<AgentRun> runs = const [],
     Iterable<ThreadMessage>? messages,
+    AgentUsage? usage,
+    String? usageMessage,
   }) {
     return ThreadSnapshot._(
       agent: agent,
@@ -35,6 +42,8 @@ class ThreadSnapshot extends Equatable {
       messages: messages ?? mapRunsToMessages(runs),
       isOffline: false,
       isStale: false,
+      usage: usage,
+      usageMessage: usageMessage,
     );
   }
 
@@ -76,13 +85,24 @@ class ThreadSnapshot extends Equatable {
   final List<ThreadMessage> messages;
   final bool isOffline;
   final bool isStale;
+  final AgentUsage? usage;
+  final String? usageMessage;
   final DateTime? cachedAt;
 
   AgentRun? get latestRun => latestAgentRun(runs);
 
   @override
   List<Object?> get props {
-    return [agent, runs, messages, isOffline, isStale, cachedAt];
+    return [
+      agent,
+      runs,
+      messages,
+      isOffline,
+      isStale,
+      usage,
+      usageMessage,
+      cachedAt,
+    ];
   }
 }
 
@@ -93,6 +113,7 @@ class ThreadRepository {
     required SseClient sseClient,
     RunPromptStore? runPromptStore,
     RunResultStore? runResultStore,
+    RunThinkingStore? runThinkingStore,
     Future<void> Function()? onUnauthorized,
   }) : this._(
          apiClient,
@@ -100,6 +121,7 @@ class ThreadRepository {
          sseClient,
          runPromptStore,
          runResultStore,
+         runThinkingStore,
          onUnauthorized,
        );
 
@@ -109,6 +131,7 @@ class ThreadRepository {
     this._sseClient,
     this._runPromptStore,
     this._runResultStore,
+    this._runThinkingStore,
     this._onUnauthorized,
   );
 
@@ -117,6 +140,7 @@ class ThreadRepository {
   final SseClient _sseClient;
   final RunPromptStore? _runPromptStore;
   final RunResultStore? _runResultStore;
+  final RunThinkingStore? _runThinkingStore;
   final Future<void> Function()? _onUnauthorized;
 
   static const _runFetchConcurrency = 4;
@@ -153,12 +177,19 @@ class ThreadRepository {
       await _upsertThreadSnapshot(agentId: agentId, agent: agent, runs: runs);
 
       final conversationPrompts = await _loadConversationPrompts(agentId, runs);
+      final usageResult = await _tryLoadAgentUsage(agentId);
       final messages = await _messagesFromRuns(
         agentId,
         runs,
         conversationPromptByRunId: conversationPrompts,
       );
-      return ThreadSnapshot.fresh(agent: agent, runs: runs, messages: messages);
+      return ThreadSnapshot.fresh(
+        agent: agent,
+        runs: runs,
+        messages: messages,
+        usage: usageResult.usage,
+        usageMessage: usageResult.message,
+      );
     } on NetworkException {
       return _readStaleCache(agentId, isOffline: true);
     }
@@ -209,12 +240,19 @@ class ThreadRepository {
     return run;
   }
 
-  Future<AgentRun> sendFollowUp(String agentId, String text) async {
+  Future<AgentRun> sendFollowUp(
+    String agentId,
+    String text, {
+    String? modelId,
+  }) async {
     final encodedAgentId = Uri.encodeComponent(agentId);
+    final normalizedModelId = _blankToNull(modelId);
     final response = await _apiClient.post<Map<String, dynamic>>(
       '/v1/agents/$encodedAgentId/runs',
       data: {
         'prompt': {'text': text},
+        if (normalizedModelId != null && normalizedModelId != 'default')
+          'model': {'id': normalizedModelId},
       },
     );
     final run = _runFromResponse(response.data, agentId: agentId);
@@ -236,6 +274,22 @@ class ThreadRepository {
     required String text,
   }) async {
     await _saveRunResult(agentId: agentId, runId: runId, text: text);
+  }
+
+  Future<void> saveRunThinking({
+    required String agentId,
+    required String runId,
+    required String text,
+  }) async {
+    await _saveRunThinking(agentId: agentId, runId: runId, text: text);
+  }
+
+  Future<AgentUsage> loadAgentUsage(String agentId) async {
+    final encodedAgentId = Uri.encodeComponent(agentId);
+    final response = await _apiClient.get<Map<String, dynamic>>(
+      '/v1/agents/$encodedAgentId/usage',
+    );
+    return parseAgentUsage(response.data);
   }
 
   AgentRun _runFromResponse(Object? data, {required String agentId}) {
@@ -302,6 +356,7 @@ class ThreadRepository {
     Map<String, String> conversationPromptByRunId = const {},
   }) async {
     final promptIndex = await _loadRunPromptIndex(agentId);
+    final thinkingIndex = await _loadRunThinkingIndex(agentId);
     final storedPrompts = {
       ...promptIndex.byRunId,
       ...conversationPromptByRunId,
@@ -319,8 +374,31 @@ class ThreadRepository {
     return mapRunsToMessages(
       runsForMessages,
       promptTextByRunId: storedPrompts,
+      thinkingTextByRunId: thinkingIndex,
       pendingInitialPromptText: promptIndex.pendingInitialPrompt,
     );
+  }
+
+  Future<_AgentUsageLoadResult> _tryLoadAgentUsage(String agentId) async {
+    try {
+      return _AgentUsageLoadResult(usage: await loadAgentUsage(agentId));
+    } on AppException catch (error, stackTrace) {
+      developer.log(
+        'Unable to load agent usage.',
+        name: 'ThreadRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return _AgentUsageLoadResult(message: error.message);
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to load agent usage.',
+        name: 'ThreadRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return const _AgentUsageLoadResult(message: 'Unable to load usage.');
+    }
   }
 
   Future<Map<String, String>> _loadConversationPrompts(
@@ -420,6 +498,25 @@ class ThreadRepository {
     } catch (error, stackTrace) {
       developer.log(
         'Unable to load saved run results.',
+        name: 'ThreadRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return const {};
+    }
+  }
+
+  Future<Map<String, String>> _loadRunThinkingIndex(String agentId) async {
+    final store = _runThinkingStore;
+    if (store == null) {
+      return const {};
+    }
+
+    try {
+      return await store.loadForAgent(agentId);
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to load saved run thinking.',
         name: 'ThreadRepository',
         error: error,
         stackTrace: stackTrace,
@@ -561,6 +658,28 @@ class ThreadRepository {
     } catch (error, stackTrace) {
       developer.log(
         'Unable to save run result.',
+        name: 'ThreadRepository',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  Future<void> _saveRunThinking({
+    required String agentId,
+    required String runId,
+    required String text,
+  }) async {
+    final store = _runThinkingStore;
+    if (store == null) {
+      return;
+    }
+
+    try {
+      await store.saveThinking(agentId: agentId, runId: runId, text: text);
+    } catch (error, stackTrace) {
+      developer.log(
+        'Unable to save run thinking.',
         name: 'ThreadRepository',
         error: error,
         stackTrace: stackTrace,
@@ -773,6 +892,13 @@ class ThreadRepository {
       throw ApiException('Cursor thread item had invalid $camelCase.');
     }
   }
+}
+
+class _AgentUsageLoadResult {
+  const _AgentUsageLoadResult({this.usage, this.message});
+
+  final AgentUsage? usage;
+  final String? message;
 }
 
 String? _blankToNull(String? value) {

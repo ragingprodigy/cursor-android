@@ -1,7 +1,9 @@
 import 'dart:async';
 
+import 'package:cursor/features/launch/domain/launch_catalog.dart';
 import 'package:cursor/features/prompts/data/prompt_library_repository.dart';
 import 'package:cursor/features/prompts/presentation/prompt_picker_sheet.dart';
+import 'package:cursor/features/thread/domain/agent_usage.dart';
 import 'package:cursor/features/thread/domain/thread_message.dart';
 import 'package:cursor/features/thread/presentation/thread_bloc.dart';
 import 'package:flutter/material.dart';
@@ -39,6 +41,9 @@ class ThreadPage extends HookWidget {
         final liveGrew =
             (previous.liveAssistantText?.length ?? 0) <
             (next.liveAssistantText?.length ?? 0);
+        final thinkingGrew =
+            (previous.liveThinkingText?.length ?? 0) <
+            (next.liveThinkingText?.length ?? 0);
         final liveToolsGrew =
             previous.liveToolSteps.length < next.liveToolSteps.length;
 
@@ -48,6 +53,7 @@ class ThreadPage extends HookWidget {
             !hasScrolledToLatest.value ||
             grew ||
             liveGrew ||
+            thinkingGrew ||
             liveToolsGrew;
       },
       listener: (context, state) {
@@ -279,6 +285,10 @@ class _ThreadHeader extends StatelessWidget {
                 style: theme.textTheme.bodyMedium,
               ),
             ],
+            if (state.agentUsage != null || state.usageMessage != null) ...[
+              const SizedBox(height: 12),
+              _UsageCard(usage: state.agentUsage, message: state.usageMessage),
+            ],
             if (url != null) ...[
               const SizedBox(height: 12),
               Align(
@@ -293,6 +303,52 @@ class _ThreadHeader extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _UsageCard extends StatelessWidget {
+  const _UsageCard({required this.usage, required this.message});
+
+  final AgentUsage? usage;
+  final String? message;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final usage = this.usage;
+    if (usage == null) {
+      return Text(
+        'Usage unavailable: $message',
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      );
+    }
+
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(top: 4),
+      title: Text('Usage: ${_formatInt(usage.totalTokens)} tokens'),
+      subtitle: message == null ? null : Text(message!),
+      children: [
+        if (usage.runs.isEmpty)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'No per-run token details reported.',
+              style: theme.textTheme.bodySmall,
+            ),
+          )
+        else
+          for (final run in usage.runs.take(10))
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: Text('Run ${run.runId}'),
+              subtitle: Text(_runUsageLabel(run)),
+            ),
+      ],
     );
   }
 }
@@ -340,6 +396,30 @@ Future<void> _openAgentUrl(BuildContext context, Uri url) async {
       const SnackBar(content: Text('Could not open agent on web.')),
     );
   }
+}
+
+String _runUsageLabel(RunUsage usage) {
+  final parts = <String>['${_formatInt(usage.totalTokens)} total'];
+  if (usage.inputTokens != null) {
+    parts.add('${_formatInt(usage.inputTokens!)} input');
+  }
+  if (usage.outputTokens != null) {
+    parts.add('${_formatInt(usage.outputTokens!)} output');
+  }
+  return parts.join(' - ');
+}
+
+String _formatInt(int value) {
+  final text = value.toString();
+  final buffer = StringBuffer();
+  for (var i = 0; i < text.length; i += 1) {
+    final remaining = text.length - i;
+    buffer.write(text[i]);
+    if (remaining > 1 && remaining % 3 == 1) {
+      buffer.write(',');
+    }
+  }
+  return buffer.toString();
 }
 
 class _LoadingPanel extends StatelessWidget {
@@ -417,7 +497,44 @@ class _MessageBubble extends StatelessWidget {
         useMarkdown: true,
       );
     }
+    if (message is ThinkingMessage) {
+      return _ThinkingBubble(message: message);
+    }
     return _ToolBubble(message: message as ToolStepMessage);
+  }
+}
+
+class _ThinkingBubble extends StatelessWidget {
+  const _ThinkingBubble({required this.message});
+
+  final ThinkingMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = theme.colorScheme.onSurfaceVariant;
+
+    return Card(
+      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
+      child: ExpansionTile(
+        initiallyExpanded: false,
+        leading: Icon(Icons.psychology_alt_outlined, color: color),
+        title: Text(
+          'Thinking',
+          style: theme.textTheme.titleSmall?.copyWith(color: color),
+        ),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: SelectableText(
+              message.text,
+              style: theme.textTheme.bodyMedium?.copyWith(color: color),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -560,7 +677,9 @@ class _Composer extends HookWidget {
       if (text.isEmpty || !canSubmit) {
         return;
       }
-      context.read<ThreadBloc>().add(ThreadFollowUpSubmitted(text));
+      context.read<ThreadBloc>().add(
+        ThreadFollowUpSubmitted(text, modelId: _selectedModelId(state)),
+      );
     }
 
     return Material(
@@ -568,66 +687,104 @@ class _Composer extends HookWidget {
       color: theme.colorScheme.surface,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Expanded(
-              child: TextField(
-                controller: controller,
-                minLines: 1,
-                maxLines: 5,
-                textInputAction: TextInputAction.send,
-                onChanged: (text) {
-                  context.read<ThreadBloc>().add(
-                    ThreadFollowUpDraftChanged(text),
-                  );
-                },
-                onSubmitted: (_) => submit(),
-                decoration: InputDecoration(
-                  prefixIcon: Icon(
-                    state.isLatestRunActive
-                        ? Icons.lock_clock_outlined
-                        : Icons.chat_bubble_outline,
-                  ),
-                  suffixIcon: IconButton(
-                    tooltip: 'Use saved prompt',
-                    icon: const Icon(Icons.library_books_outlined),
-                    onPressed: () async {
-                      final selected = await showPromptPickerSheet(
-                        context: context,
-                        repository: context.read<PromptLibraryRepository>(),
-                      );
-                      if (selected == null || !context.mounted) {
-                        return;
-                      }
+            DropdownButtonFormField<String>(
+              initialValue: _selectedModelId(state),
+              decoration: InputDecoration(
+                labelText: state.isLoadingModels
+                    ? 'Model (loading...)'
+                    : 'Follow-up model',
+                border: const OutlineInputBorder(),
+                isDense: true,
+              ),
+              items: state.models
+                  .map((model) {
+                    return DropdownMenuItem<String>(
+                      value: model.id,
+                      child: Text(model.name),
+                    );
+                  })
+                  .toList(growable: false),
+              onChanged: state.isSendingFollowUp
+                  ? null
+                  : (value) {
                       context.read<ThreadBloc>().add(
-                        ThreadFollowUpDraftChanged(selected.body),
+                        ThreadFollowUpModelChanged(value),
                       );
                     },
-                  ),
-                  hintText: hint,
-                  filled: true,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(18),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: controller,
+                    minLines: 1,
+                    maxLines: 5,
+                    textInputAction: TextInputAction.newline,
+                    onChanged: (text) {
+                      context.read<ThreadBloc>().add(
+                        ThreadFollowUpDraftChanged(text),
+                      );
+                    },
+                    decoration: InputDecoration(
+                      prefixIcon: Icon(
+                        state.isLatestRunActive
+                            ? Icons.lock_clock_outlined
+                            : Icons.chat_bubble_outline,
+                      ),
+                      suffixIcon: IconButton(
+                        tooltip: 'Use saved prompt',
+                        icon: const Icon(Icons.library_books_outlined),
+                        onPressed: () async {
+                          final selected = await showPromptPickerSheet(
+                            context: context,
+                            repository: context.read<PromptLibraryRepository>(),
+                          );
+                          if (selected == null || !context.mounted) {
+                            return;
+                          }
+                          context.read<ThreadBloc>().add(
+                            ThreadFollowUpDraftChanged(selected.body),
+                          );
+                        },
+                      ),
+                      hintText: hint,
+                      filled: true,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            IconButton.filled(
-              onPressed: canSubmit ? submit : null,
-              icon: state.isSendingFollowUp
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.send_outlined),
+                const SizedBox(width: 12),
+                IconButton.filled(
+                  onPressed: canSubmit ? submit : null,
+                  icon: state.isSendingFollowUp
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.send_outlined),
+                ),
+              ],
             ),
           ],
         ),
       ),
     );
+  }
+
+  String _selectedModelId(ThreadState state) {
+    final selected = state.selectedModelId;
+    if (selected != null && state.models.any((model) => model.id == selected)) {
+      return selected;
+    }
+    return LaunchModel.defaultModel.id;
   }
 }
 

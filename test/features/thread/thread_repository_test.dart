@@ -124,6 +124,7 @@ void main() {
         '/v1/agents/bc-1/runs',
         '/v1/agents/bc-1/runs/run-1',
         '/v0/agents/bc-1/conversation',
+        '/v1/agents/bc-1/usage',
       ]);
       expect(snapshot.agent!.name, 'Ship Android app');
       expect(snapshot.messages, hasLength(3));
@@ -196,6 +197,7 @@ void main() {
         '/v1/agents/bc-1/runs',
         '/v1/agents/bc-1/runs/run-1',
         '/v0/agents/bc-1/conversation',
+        '/v1/agents/bc-1/usage',
       ]);
       expect(snapshot.runs.map((run) => run.id), ['run-1']);
       expect(snapshot.messages.whereType<UserMessage>().single.text, 'Prompt');
@@ -335,6 +337,35 @@ void main() {
     expect(run.status, 'CREATING');
     expect(run.isActive, isTrue);
     expect(prompt!.content, 'Keep going');
+  });
+
+  test('sendFollowUp includes model when selected', () async {
+    Object? seenData;
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      seenData = options.data;
+      return ResponseBody.fromString(
+        '''
+        { "run": { "id": "run-3", "status": "CREATING", "createdAt": "2026-08-05T12:00:00.000Z" } }
+        ''',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = ThreadRepository(
+      apiClient: CursorApiClient(dio),
+      database: database,
+      sseClient: SseClient(dio),
+    );
+
+    await repository.sendFollowUp('bc-1', 'Keep going', modelId: 'gpt-5.5');
+
+    expect(seenData, {
+      'prompt': {'text': 'Keep going'},
+      'model': {'id': 'gpt-5.5'},
+    });
   });
 
   test('load merges stored run prompts when API omits prompt text', () async {
@@ -518,6 +549,7 @@ void main() {
         '/v1/agents/bc-1',
         '/v1/agents/bc-1/runs',
         '/v0/agents/bc-1/conversation',
+        '/v1/agents/bc-1/usage',
       ]);
       expect(
         snapshot.messages.whereType<AssistantMessage>().single.text,
@@ -805,6 +837,47 @@ void main() {
     expect(seen!.path, '/v1/agents/bc-1/runs/run-1');
     expect(run.status, 'completed');
     expect(result!.content, 'Finished from get run');
+  });
+
+  test('loadAgentUsage fetches and parses token usage', () async {
+    RequestOptions? seen;
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    dio.httpClientAdapter = _Adapter((options) async {
+      seen = options;
+      return ResponseBody.fromString(
+        '''
+        {
+          "usage": {
+            "totalTokens": 42,
+            "runs": [
+              {
+                "runId": "run-1",
+                "inputTokens": 10,
+                "outputTokens": 32
+              }
+            ]
+          }
+        }
+        ''',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = ThreadRepository(
+      apiClient: CursorApiClient(dio),
+      database: database,
+      sseClient: SseClient(dio),
+    );
+
+    final usage = await repository.loadAgentUsage('bc-1');
+
+    expect(seen!.path, '/v1/agents/bc-1/usage');
+    expect(usage.totalTokens, 42);
+    expect(usage.runs.single.runId, 'run-1');
+    expect(usage.runs.single.inputTokens, 10);
+    expect(usage.runs.single.outputTokens, 32);
   });
 
   test('streamRun delegates to the SSE client with the run path', () async {

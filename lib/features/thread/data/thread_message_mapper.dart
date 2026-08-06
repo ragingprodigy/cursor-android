@@ -23,6 +23,7 @@ AgentRun? latestAgentRun(Iterable<AgentRun> runs) {
 List<ThreadMessage> mapRunsToMessages(
   Iterable<AgentRun> runs, {
   Map<String, String> promptTextByRunId = const {},
+  Map<String, String> thinkingTextByRunId = const {},
   String? pendingInitialPromptText,
 }) {
   final sortedRuns = sortRunsByCreatedAt(runs);
@@ -47,6 +48,18 @@ List<ThreadMessage> mapRunsToMessages(
     }
 
     messages.addAll(_toolMessagesFromRun(run));
+
+    final thinkingText = _blankToNull(thinkingTextByRunId[run.id]);
+    if (thinkingText != null) {
+      messages.add(
+        ThinkingMessage(
+          id: '${run.id}:thinking',
+          runId: run.id,
+          text: thinkingText,
+          createdAt: run.createdAt,
+        ),
+      );
+    }
 
     if (resultText != null) {
       messages.add(

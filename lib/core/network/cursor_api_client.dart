@@ -10,7 +10,9 @@ class CursorApiClient {
       InterceptorsWrapper(
         onRequest: (options, handler) {
           final apiKey = _apiKey;
-          if (apiKey != null && apiKey.isNotEmpty) {
+          if (apiKey != null &&
+              apiKey.isNotEmpty &&
+              !options.headers.containsKey('Authorization')) {
             options.headers['Authorization'] = 'Bearer $apiKey';
           }
           handler.next(options);
@@ -70,6 +72,34 @@ class CursorApiClient {
     } on DioException catch (error) {
       throw _mapDioException(error);
     }
+  }
+
+  Future<Response<T>> postWithBasicAuth<T>(
+    String path, {
+    Object? data,
+    Map<String, dynamic>? queryParameters,
+    Options? options,
+    CancelToken? cancelToken,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final apiKey = _apiKey;
+    final mergedOptions = options ?? Options();
+    if (apiKey != null && apiKey.isNotEmpty) {
+      mergedOptions.headers = {
+        ...?mergedOptions.headers,
+        'Authorization': 'Basic ${base64Encode(utf8.encode('$apiKey:'))}',
+      };
+    }
+    return post<T>(
+      path,
+      data: data,
+      queryParameters: queryParameters,
+      options: mergedOptions,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
   }
 
   Future<Response<T>> put<T>(
