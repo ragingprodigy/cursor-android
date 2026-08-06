@@ -165,20 +165,32 @@ class UsageBloc extends Bloc<UsageEvent, UsageState> {
         message: null,
       ),
     );
-    final report = await _repository.loadReport(
-      startDate: range.$1,
-      endDate: range.$2,
-    );
-    emit(
-      state.copyWith(
-        status: UsageStatus.ready,
-        preset: preset,
-        startDate: report.startDate,
-        endDate: report.endDate,
-        report: report,
-        message: report.message,
-      ),
-    );
+    try {
+      final report = await _repository.loadReport(
+        startDate: range.$1,
+        endDate: range.$2,
+      );
+      emit(
+        state.copyWith(
+          status: UsageStatus.ready,
+          preset: preset,
+          startDate: report.startDate,
+          endDate: report.endDate,
+          report: report,
+          message: report.message,
+        ),
+      );
+    } catch (error) {
+      emit(
+        state.copyWith(
+          status: UsageStatus.ready,
+          preset: preset,
+          startDate: range.$1,
+          endDate: range.$2,
+          message: 'Unable to load usage: $error',
+        ),
+      );
+    }
   }
 }
 

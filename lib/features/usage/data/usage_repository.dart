@@ -37,8 +37,10 @@ class UsageRepository {
       spend = spendResult.summary;
       if (spendResult.truncated) {
         warnings.add(
-          'Spend shows the first ${_pageSize * spendResult.pagesLoaded} '
-          'team members (more pages available).',
+          spendResult.truncationReason == 'rate limited'
+              ? 'Spend was rate-limited; showing partial team member totals.'
+              : 'Spend shows the first ${_pageSize * spendResult.pagesLoaded} '
+                    'team members (more pages available).',
         );
       }
     } on UnauthorizedException catch (error, stackTrace) {
@@ -100,9 +102,11 @@ class UsageRepository {
       events = eventsResult.summary;
       if (eventsResult.truncated) {
         warnings.add(
-          'Usage events show the first '
-          '${_pageSize * eventsResult.pagesLoaded} events '
-          '(more pages available).',
+          eventsResult.truncationReason == 'rate limited'
+              ? 'Usage events were rate-limited; showing partial event totals.'
+              : 'Usage events show the first '
+                    '${_pageSize * eventsResult.pagesLoaded} events '
+                    '(more pages available).',
         );
       }
     } on UnauthorizedException catch (error, stackTrace) {
@@ -179,23 +183,33 @@ class UsageRepository {
     var page = 1;
     var totalPages = 1;
     var truncated = false;
+    String? truncationReason;
 
     while (page <= totalPages && page <= _maxPages) {
-      final response = await _apiClient.postWithBasicAuth<Map<String, dynamic>>(
-        '/teams/spend',
-        data: {'page': page, 'pageSize': _pageSize},
-      );
-      final payload = _asMap(response.data);
-      members.addAll(_spendItems(payload));
-      totalPages = math.max(1, _intAt(payload, const ['totalPages']) ?? 1);
-      if (totalPages > _maxPages && page == _maxPages) {
+      try {
+        final response = await _apiClient
+            .postWithBasicAuth<Map<String, dynamic>>(
+              '/teams/spend',
+              data: {'page': page, 'pageSize': _pageSize},
+            );
+        final payload = _asMap(response.data);
+        members.addAll(_spendItems(payload));
+        totalPages = math.max(1, _intAt(payload, const ['totalPages']) ?? 1);
+        if (totalPages > _maxPages && page == _maxPages) {
+          truncated = true;
+          truncationReason ??= 'page cap';
+        }
+        page += 1;
+      } on RateLimitedException {
         truncated = true;
+        truncationReason = 'rate limited';
+        break;
       }
-      page += 1;
     }
 
     if (totalPages > _maxPages) {
       truncated = true;
+      truncationReason ??= 'page cap';
     }
 
     final total = members.fold<double>(0, (sum, item) {
@@ -212,13 +226,20 @@ class UsageRepository {
               0);
     });
 
+    if (members.isEmpty && truncated && truncationReason == 'rate limited') {
+      throw const RateLimitedException(
+        'Rate limited while loading team spend.',
+      );
+    }
+
     return _PagedSpend(
       summary: TeamSpendSummary(
         totalSpendCents: total,
         userCount: members.length,
       ),
-      pagesLoaded: page - 1,
+      pagesLoaded: math.max(0, page - 1),
       truncated: truncated,
+      truncationReason: truncationReason,
     );
   }
 
@@ -230,28 +251,44 @@ class UsageRepository {
     var page = 1;
     var totalPages = 1;
     var truncated = false;
+    String? truncationReason;
 
     while (page <= totalPages && page <= _maxPages) {
-      final response = await _apiClient.postWithBasicAuth<Map<String, dynamic>>(
-        '/teams/filtered-usage-events',
-        data: {
-          'startDate': startDate.toUtc().millisecondsSinceEpoch,
-          'endDate': endDate.toUtc().millisecondsSinceEpoch,
-          'page': page,
-          'pageSize': _pageSize,
-        },
-      );
-      final payload = _asMap(response.data);
-      items.addAll(_eventItems(payload));
-      totalPages = math.max(1, _intAt(payload, const ['totalPages']) ?? 1);
-      if (totalPages > _maxPages && page == _maxPages) {
+      try {
+        final response = await _apiClient
+            .postWithBasicAuth<Map<String, dynamic>>(
+              '/teams/filtered-usage-events',
+              data: {
+                'startDate': startDate.toUtc().millisecondsSinceEpoch,
+                'endDate': endDate.toUtc().millisecondsSinceEpoch,
+                'page': page,
+                'pageSize': _pageSize,
+              },
+            );
+        final payload = _asMap(response.data);
+        items.addAll(_eventItems(payload));
+        totalPages = math.max(1, _intAt(payload, const ['totalPages']) ?? 1);
+        if (totalPages > _maxPages && page == _maxPages) {
+          truncated = true;
+          truncationReason ??= 'page cap';
+        }
+        page += 1;
+      } on RateLimitedException {
         truncated = true;
+        truncationReason = 'rate limited';
+        break;
       }
-      page += 1;
     }
 
     if (totalPages > _maxPages) {
       truncated = true;
+      truncationReason ??= 'page cap';
+    }
+
+    if (items.isEmpty && truncated && truncationReason == 'rate limited') {
+      throw const RateLimitedException(
+        'Rate limited while loading usage events.',
+      );
     }
 
     var chargedCents = 0.0;
@@ -270,8 +307,9 @@ class UsageRepository {
         chargedCents: chargedCents,
         totalTokens: totalTokens,
       ),
-      pagesLoaded: page - 1,
+      pagesLoaded: math.max(0, page - 1),
       truncated: truncated,
+      truncationReason: truncationReason,
     );
   }
 
@@ -453,11 +491,13 @@ class _PagedSpend {
     required this.summary,
     required this.pagesLoaded,
     required this.truncated,
+    this.truncationReason,
   });
 
   final TeamSpendSummary summary;
   final int pagesLoaded;
   final bool truncated;
+  final String? truncationReason;
 }
 
 class _PagedEvents {
@@ -465,11 +505,13 @@ class _PagedEvents {
     required this.summary,
     required this.pagesLoaded,
     required this.truncated,
+    this.truncationReason,
   });
 
   final TeamUsageEventsSummary summary;
   final int pagesLoaded;
   final bool truncated;
+  final String? truncationReason;
 }
 
 const _adminUnavailableMessage =

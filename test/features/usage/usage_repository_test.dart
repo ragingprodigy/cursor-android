@@ -149,6 +149,65 @@ void main() {
     expect(report.fallbackUsage, isNull);
   });
 
+  test('loadReport keeps partial spend pages when later page is rate limited', () async {
+    var spendCalls = 0;
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.cursor.com'));
+    final apiClient = CursorApiClient(dio)..setApiKey('key');
+    dio.httpClientAdapter = _Adapter((options) async {
+      if (options.path == '/teams/spend') {
+        spendCalls += 1;
+        final body = options.data;
+        final page = body is Map ? body['page'] : 1;
+        if (page == 2) {
+          return ResponseBody.fromString(
+            '{"message":"rate limited"}',
+            429,
+            headers: {
+              Headers.contentTypeHeader: ['application/json'],
+            },
+          );
+        }
+        return ResponseBody.fromString(
+          '''
+          {
+            "teamMemberSpend":[{"spendCents":10}],
+            "totalPages": 3,
+            "page": 1,
+            "pageSize": 100
+          }
+          ''',
+          200,
+          headers: {
+            Headers.contentTypeHeader: ['application/json'],
+          },
+        );
+      }
+      return ResponseBody.fromString(
+        '{"usageEvents":[],"totalPages":1}',
+        200,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    });
+    final repository = UsageRepository(
+      apiClient: apiClient,
+      database: database,
+      loadAgentUsage: (_) async => const AgentUsage(totalTokens: 0, runs: []),
+    );
+
+    final report = await repository.loadReport(
+      startDate: DateTime.utc(2026, 8, 1),
+      endDate: DateTime.utc(2026, 8, 2),
+    );
+
+    expect(spendCalls, 2);
+    expect(report.spend!.totalSpendCents, 10);
+    expect(report.spend!.userCount, 1);
+    expect(report.message, contains('rate-limited'));
+    expect(report.adminUnavailable, isFalse);
+  });
+
   test(
     'loadReport falls back to cached agent usage when Admin is rejected',
     () async {

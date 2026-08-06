@@ -944,9 +944,11 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       case 'status':
         final runStatus = _extractRunStatus(sse.data);
         if (runStatus != null && !AgentRun.activeStatuses.contains(runStatus)) {
-          _stopStreaming();
-          emit(_clearLiveOverlay(state.copyWith(isLatestRunActive: false)));
-          add(const ThreadRefreshed());
+          await _completeStreamingRun(
+            emit,
+            runId: event.runId,
+            markInactive: true,
+          );
         } else if (runStatus != null) {
           emit(state.copyWith(isLatestRunActive: true, actionMessage: null));
         }
@@ -963,17 +965,13 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
         if (isClosed) {
           return;
         }
-        _stopStreaming();
-        emit(_clearLiveOverlay(state));
-        add(const ThreadRefreshed());
+        await _completeStreamingRun(emit, runId: event.runId);
       case 'done':
         await _persistStreamResult(event.runId, sse.data);
         if (isClosed) {
           return;
         }
-        _stopStreaming();
-        emit(_clearLiveOverlay(state));
-        add(const ThreadRefreshed());
+        await _completeStreamingRun(emit, runId: event.runId);
       default:
         break;
     }
@@ -994,6 +992,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
       return;
     }
     if (error is UnauthorizedException) {
+      await _persistLiveThinking(event.runId);
+      if (isClosed) {
+        return;
+      }
       _stopStreaming();
       final callback = _onUnauthorized;
       if (callback != null) {
@@ -1043,6 +1045,10 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     }
 
     if (_reconnectAttempts >= _maxReconnectAttempts) {
+      await _persistLiveThinking(event.runId);
+      if (isClosed) {
+        return;
+      }
       _stopStreaming();
       emit(
         _withActionMessage(
@@ -1080,9 +1086,7 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     try {
       final run = await _repository.loadRun(_agentId, event.runId);
       if (!run.isActive) {
-        _stopStreaming();
-        emit(_clearLiveOverlay(state));
-        add(const ThreadRefreshed());
+        await _completeStreamingRun(emit, runId: event.runId);
       }
     } catch (_) {
       // Transient poll failure; keep polling until the next tick.
@@ -1101,7 +1105,18 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   void _syncStreamForLatestRun(AgentRun? latestRun) {
     final isActive = latestRun?.isActive ?? false;
     if (!isActive) {
+      final runId = _streamingRunId;
+      final thinkingText = _blankToNull(_liveThinkingBuffer.toString());
       _stopStreaming();
+      if (runId != null && thinkingText != null) {
+        unawaited(
+          _repository.saveRunThinking(
+            agentId: _agentId,
+            runId: runId,
+            text: thinkingText,
+          ),
+        );
+      }
       return;
     }
     if (_streamingRunId == latestRun!.id) {
@@ -1111,7 +1126,20 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
   }
 
   void _startStreaming(String runId) {
+    final previousRunId = _streamingRunId;
+    final previousThinking = _blankToNull(_liveThinkingBuffer.toString());
     _stopStreaming();
+    if (previousRunId != null &&
+        previousThinking != null &&
+        previousRunId != runId) {
+      unawaited(
+        _repository.saveRunThinking(
+          agentId: _agentId,
+          runId: previousRunId,
+          text: previousThinking,
+        ),
+      );
+    }
     _streamingRunId = runId;
     _reconnectAttempts = 0;
     _retriedInvalidLastEventId = false;
@@ -1176,9 +1204,36 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     });
   }
 
-  void _stopStreaming() {
-    final runId = _streamingRunId;
+  Future<void> _completeStreamingRun(
+    Emitter<ThreadState> emit, {
+    required String runId,
+    bool markInactive = false,
+  }) async {
+    await _persistLiveThinking(runId);
+    if (isClosed) {
+      return;
+    }
+    _stopStreaming();
+    final next = markInactive
+        ? state.copyWith(isLatestRunActive: false)
+        : state;
+    emit(_clearLiveOverlay(next));
+    add(const ThreadRefreshed());
+  }
+
+  Future<void> _persistLiveThinking(String runId) async {
     final thinkingText = _blankToNull(_liveThinkingBuffer.toString());
+    if (thinkingText == null) {
+      return;
+    }
+    await _repository.saveRunThinking(
+      agentId: _agentId,
+      runId: runId,
+      text: thinkingText,
+    );
+  }
+
+  void _stopStreaming() {
     _streamSubscription?.cancel();
     _streamSubscription = null;
     _pollTimer?.cancel();
@@ -1194,17 +1249,6 @@ class ThreadBloc extends Bloc<ThreadEvent, ThreadState> {
     _liveAssistantBuffer.clear();
     _liveThinkingBuffer.clear();
     _liveToolStepsById.clear();
-    // Persist before buffers are discarded on every completion/stop path
-    // (status, poll, 410 fallback, max reconnect), not only result/done.
-    if (runId != null && thinkingText != null) {
-      unawaited(
-        _repository.saveRunThinking(
-          agentId: _agentId,
-          runId: runId,
-          text: thinkingText,
-        ),
-      );
-    }
   }
 
   Duration _reconnectBackoff(int attempt) {
